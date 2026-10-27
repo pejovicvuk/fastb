@@ -31,7 +31,7 @@ Built for the Meta Global AI Developer Hackathon. Deadline: Thu Nov 5, 03:00 Bel
 - Public repo; all code is new work written during the event.
 - **No company code or data** from `~/Developer/TCFramework` (ideas only).
 - **No secrets in the repo.** Meta API key lives in `~/.fastb/secrets.env` (`META_API_KEY`). The Meta free credits allow content use for product improvement: send no private data to the Meta API.
-- `docs/participant-guide.txt` is private: delete it before the repo goes public.
+- The participant guide is private: it lives in `~/.fastb/private/`, never in the repo.
 - Meta models must do real work (draft-and-verify drafter, gas pack routine learning), not decoration.
 
 ## Code

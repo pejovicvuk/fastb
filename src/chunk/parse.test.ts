@@ -1,0 +1,74 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { parseChunk, parseStep, ParseError, tokenize } from "./parse.ts";
+
+test("tokenize keeps quoted strings with escapes together", () => {
+  assert.deepEqual(tokenize('click button "Say \\"hi\\" now" #2'), ["click", "button", '"Say \\"hi\\" now"', "#2"]);
+});
+
+test("parses the main step kinds", () => {
+  assert.deepEqual(parseStep("goto https://x.com/a", 1), { op: "goto", url: "https://x.com/a" });
+  assert.deepEqual(parseStep("click @e23", 1), { op: "click", target: { kind: "ref", ref: "e23" } });
+  assert.deepEqual(parseStep("click @f1e133", 1), { op: "click", target: { kind: "ref", ref: "f1e133" } });
+  assert.deepEqual(parseStep('click button "Create account"', 1), {
+    op: "click",
+    target: { kind: "text", role: "button", text: "Create account", nth: undefined },
+  });
+  assert.deepEqual(parseStep('click "Add" #3', 1), { op: "click", target: { kind: "text", text: "Add", nth: 3 } });
+  assert.deepEqual(parseStep('fill "Email" = test@x.com', 1), {
+    op: "fill",
+    target: { kind: "text", text: "Email", nth: undefined },
+    value: "test@x.com",
+  });
+  assert.deepEqual(parseStep('select "Size" = "Medium (12 in)"', 1), {
+    op: "select",
+    target: { kind: "text", text: "Size", nth: undefined },
+    value: "Medium (12 in)",
+  });
+  assert.deepEqual(parseStep("press Enter", 1), { op: "press", key: "Enter" });
+  assert.deepEqual(parseStep('press "Search" Enter', 1), {
+    op: "press",
+    key: "Enter",
+    target: { kind: "text", text: "Search", nth: undefined },
+  });
+});
+
+test("parses waits and expects", () => {
+  assert.deepEqual(parseStep("wait 500ms", 1), { op: "wait", ms: 500 });
+  assert.deepEqual(parseStep("wait 2s", 1), { op: "wait", ms: 2000 });
+  assert.deepEqual(parseStep('wait for text "Saved"', 1), { op: "wait for text", text: "Saved" });
+  assert.deepEqual(parseStep('wait for gone "Loading"', 1), { op: "wait for gone", text: "Loading" });
+  assert.deepEqual(parseStep('expect text "Welcome"', 1), { op: "expect text", text: "Welcome" });
+  assert.deepEqual(parseStep('expect no text "Error"', 1), { op: "expect no text", text: "Error" });
+  assert.deepEqual(parseStep("expect url /dashboard", 1), { op: "expect url", text: "/dashboard" });
+  assert.deepEqual(parseStep('expect value "Qty" = 2', 1), {
+    op: "expect value",
+    target: { kind: "text", text: "Qty", nth: undefined },
+    value: "2",
+  });
+});
+
+test("an = inside quotes is not the assignment", () => {
+  assert.deepEqual(parseStep('fill "a = b" = c', 1), {
+    op: "fill",
+    target: { kind: "text", text: "a = b", nth: undefined },
+    value: "c",
+  });
+});
+
+test("skips blank lines and comments, keeps line numbers", () => {
+  const steps = parseChunk('\n# setup\ngoto x.com\n\nclick "Go"\n');
+  assert.deepEqual(
+    steps.map((s) => [s.line, s.step.op]),
+    [
+      [3, "goto"],
+      [5, "click"],
+    ],
+  );
+});
+
+test("reports bad lines with their number", () => {
+  assert.throws(() => parseChunk('goto x.com\nclick Save'), (e: unknown) => e instanceof ParseError && e.line === 2);
+  assert.throws(() => parseChunk("dance now"), /unknown step "dance"/);
+  assert.throws(() => parseChunk('fill "Email"'), /fill needs/);
+});

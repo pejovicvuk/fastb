@@ -16,18 +16,30 @@ Claude Code + Playwright MCP on 22 REAL tasks: 62 s, 27 turns, $0.25 per task (m
 
 Each phase ends with a "done when" check. Do not start the next phase before it passes, except where noted.
 
-### Phase 1 · Engine skeleton
-- [ ] Background engine + thin CLI, talking over a local socket. CLI starts the engine if it is not running.
-- [ ] Browser link: launch Chromium, or connect to a running Chrome over CDP (`--cdp http://127.0.0.1:9222`).
-- [ ] `fastb open <url>`, `fastb look` (page as short text with refs: `@e3 button "Save"`), `fastb look --shot`.
-- **Done when:** `fastb open` + `fastb look` work on a REAL site from the terminal.
+### Phase 1 · Engine skeleton · done 2026-10-27 (review pending)
+- [x] Background engine + thin CLI, talking over a local socket. CLI starts the engine if it is not running.
+- [x] Browser link: launch Chrome (own profile, `--headless` optional), or connect to a running Chrome over CDP (`--cdp http://127.0.0.1:9222`). Options stick until changed.
+- [x] `fastb open <url>` (prints the page, `--quiet` to skip), `fastb look` (page as short text with refs: `@e3 button "Save"`), `look --shot`, `look --full`, `status`, `stop`.
+- [x] Settle: wait for no DOM changes for 300 ms and no visible loading indicator (max 8 s on open, 3 s on look). No "network idle".
+- [x] Compactor: DashDish home page 109,542 → 18,168 chars (6.0x). 10 unit tests.
+- **Done when:** `fastb open` + `fastb look` work on a REAL site from the terminal. **Met 2026-10-27** (GoMail, DashDish; own Chrome, headless, CDP).
+- Notes: GoMail has a built-in ~6.5 s fake loading screen. `look` on a settled page: ~0.4 s. CLI start (node, built): ~25 ms.
 
-### Phase 2 · Chunks
-- [ ] Line-format parser: `goto`, `fill "X" = v`, `click "X"`, `select "X" = v`, `press Enter`, `check "X"`, `wait for text|gone "X"`, `expect text|url|value`.
-- [ ] Target resolution: ref (`@e3`) → exact role + name → label/placeholder → fuzzy text. Ambiguous → stop and report the choices.
-- [ ] Smart waits: after each step wait for the expected change or a short quiet window, never "page idle".
-- [ ] Stop on surprise: report step number, expected, seen.
-- **Done when:** a 5-step form chunk runs in one call and stops correctly when a step fails.
+### Phase 2 · Chunks · done 2026-10-27 (review pending)
+- [x] Line-format parser: `goto`, `click`, `hover`, `check`/`uncheck`, `fill "X" = v`, `type`, `select`, `press [target] Key`, `wait 500ms`, `wait for text|gone "X"`, `expect text|no text|url|value`. Targets: `@ref`, `"Label"`, `role "Name"`, `#n`.
+- [x] Target resolution, in tiers: role + exact name → label/placeholder → text → loose matches → HTML fallbacks (`button` that contains the text). More than one match → stop and list the choices (`#n`).
+- [x] Smart waits: elements are searched again until 5 s; after clicks and key presses the page settles (quiet 200 ms, max 3 s). No "page idle".
+- [x] Stop on surprise: step number, the step, the reason, steps done, then the page.
+- [x] Input: heredoc / pipe, `--file`, or one step per argument. `--no-look` prints only the page header.
+- [x] `--fresh`: temporary empty profile.
+- **Done when:** a 5-step form chunk runs in one call and stops correctly when a step fails. **Met 2026-10-27:** REAL gomail-3 (compose email) passes the benchmark checker (reward 1) with one 6-step chunk in 0.9 s (baseline: 51 s, 12 turns). A chunk with a missing button stops at that step with the reason.
+- Lessons:
+  - REAL sets `hide_aria_labels: true`: many controls have no names. fastb must work without names.
+  - Playwright's role search (`getByRole`) misses some elements that the snapshot shows as buttons on these sites. HTML fallbacks fix it.
+  - Rich-text editors (contenteditable) have no role: `look` marks them `role=textbox` before the snapshot.
+  - Refs belong to the latest AI snapshot of the frame. Never take an element-level AI snapshot after the page snapshot (it renumbers refs).
+  - The saved profile keeps site data between runs (a stale draft broke the recipient). Benchmarks use `--fresh`.
+  - GoMail's "To" field needs the suggestion clicked, not just text.
 
 ### Phase 3 · Changes-only feedback and agent link
 - [ ] Snapshot diff: after a chunk, return only what changed (added / removed / changed lines).
@@ -68,7 +80,8 @@ Can start in parallel with phase 5 once phase 4 passes.
 - [ ] README: install, commands, benchmark numbers, how the Meta model is used.
 
 ### Phase 9 · Ship
-- [ ] Remove `docs/participant-guide.txt` (private). Make the repo public. Open it logged out.
+- [x] Participant guide moved out of the repo (`~/.fastb/private/`), removed from history 2026-10-27.
+- [ ] Open the public repo logged out.
 - [ ] Submit on the CV platform, well before the deadline.
 - [ ] Post the demo on X (Most Viral prize, deadline Nov 8, 23:59 ET).
 

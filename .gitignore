@@ -6,3 +6,4 @@ dist/
 .env
 .env.*
 *.secrets.env
+docs/participant-guide.txt

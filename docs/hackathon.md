@@ -1,6 +1,6 @@
 # Meta Global AI Developer Hackathon: notes
 
-Source files: `participant-guide.txt` (guide pasted from the event page), `images/` (kickoff slides, Oct 26).
+Source files: participant guide at `~/.fastb/private/participant-guide.txt` (private, not in the repo), `images/` (kickoff slides, Oct 26).
 
 ## Our entry
 
