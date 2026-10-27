@@ -14,15 +14,16 @@ A fast browser-execution engine for AI coding agents (Claude Code, Codex). The a
 
 ## State now
 
-- Repo: `~/Developer/fastb`. GitHub: `pejovicvuk/fastb`, **public**. History cleaned and force-pushed 2026-10-27 (the private guide is out of `main`).
-- **Phases 1, 2 and 3 are done** and ticked in `docs/plan.md`. Phases 1–2 are committed and pushed. Phase 3 is not committed yet; its message is in `.fastb/commit-msg.txt`.
-- Phase 3 proof: `claude -p` with only fastb did REAL dashdish-2 (reward 1, 10 turns, 57 s, one run). Script: `.fastb/agent-run.sh <task-id>`.
-- Codex adversarial review of phases 1–3: 5 rounds, all findings fixed, last verdict "approve".
+- Repo: `~/Developer/fastb`. GitHub: `pejovicvuk/fastb`, **public**.
+- **Phases 1–4 are done** (see `docs/plan.md`). Phases 1–3 passed Codex review and are pushed.
+- Phase 4 checkpoint met just: Claude Code + fastb on 22 REAL tasks, median 62 s -> 41 s (1.51x), success 13/22 -> 16/22, turns 27 -> 12, cost $5.61 -> $3.91 (`docs/bench-2026-10-27.md`). One run per task.
+- Bench: `~/Desktop/fastb-bench/run_fastb.py <task>`, `run_all_fastb.sh` (22 tasks), `compare.py [file]`.
 
 ## Next steps
 
-1. Remind me to commit the review fixes with `git commit -F .fastb/commit-msg.txt` and push, if not done.
-2. Start **phase 4** (see `docs/plan.md`): add a "claude-code + fastb" setup to `~/Desktop/fastb-bench` (copy `run_baseline.py`; base it on `.fastb/agent-run.sh`: skill in `<cwd>/.claude/skills/fastb`, `--allowedTools "Bash(fastb:*)" Skill`, browser via `--cdp` to the harness Chrome or `--fresh`), run the same 22 tasks, compare. Checkpoint: at least 1.5x faster with the same success.
+1. If not done: commit the phase 4 work with `git commit -F .fastb/commit-msg.txt` and push.
+2. Optional: read the 6 tasks both setups fail (fly-unified x3, opendining-3/4, topwork-1).
+3. **Phase 5** (draft and verify with a Meta model) needs `META_API_KEY` in `~/.fastb/secrets.env` and a model choice. Phase 8–9 (video, README, submit) should start early enough.
 
 ## Handy tools (gitignored, in `.fastb/`)
 

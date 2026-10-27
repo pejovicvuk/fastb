@@ -5,7 +5,9 @@ import type { ParsedStep, Step, Target } from "./parse.ts";
 import { riskyWord } from "./safety.ts";
 import { resolveTarget, type Purpose } from "./target.ts";
 
-const ACTION_MS = 5000;
+const FIND_MS = 5000; // the element may still be rendering
+const ACTION_MS = 3000; // found and visible: only animations, cover or disabled state remain
+const TYPE_DELAY_MS = 15;
 const EXPECT_MS = 5000;
 const WAIT_FOR_MS = 10000;
 
@@ -56,7 +58,7 @@ export async function runChunk(currentPage: () => Promise<Page>, steps: ParsedSt
 
 async function find(page: Page, step: Extract<Step, { target?: unknown }>, purpose: Purpose): Promise<Locator> {
   if (!("target" in step) || !step.target) throw new StepError("no target");
-  const r = await resolveTarget(page, step.target, purpose, ACTION_MS);
+  const r = await resolveTarget(page, step.target, purpose, FIND_MS);
   if (!r.ok) throw new StepError(r.reason, r.choices);
   return r.locator;
 }
@@ -75,7 +77,10 @@ async function runStep(page: Page, step: Step, allow: boolean): Promise<void> {
     case "click": {
       const loc = await find(page, step, "click");
       if (!allow) await gate(loc, step.target);
-      await loc.click({ timeout: ACTION_MS });
+      await loc.click({ timeout: ACTION_MS }).catch(async (err: Error) => {
+        if (!/intercepts pointer events/.test(err.message)) throw err;
+        throw new StepError(`another element covers it${await coverText(loc)} (close it, or use press @ref Enter)`);
+      });
       await afterAction(page);
       return;
     }
@@ -90,11 +95,20 @@ async function runStep(page: Page, step: Step, allow: boolean): Promise<void> {
       await afterAction(page);
       return;
     }
-    case "fill":
-      await (await find(page, step, "input")).fill(step.value, { timeout: ACTION_MS });
+    case "fill": {
+      const loc = await find(page, step, "input");
+      // Only real text fields can be filled; a <select> is chosen instead.
+      const kind = await loc
+        .evaluate((el) => (el.tagName === "SELECT" ? "select" : el.matches("input, textarea") || (el as HTMLElement).isContentEditable ? "text" : el.tagName.toLowerCase()))
+        .catch(() => "text");
+      if (kind === "select") await select(page, loc, step.value);
+      else if (kind !== "text") throw new StepError(`it is a ${kind}, not a text field: click it, or use type`);
+      else await loc.fill(step.value, { timeout: ACTION_MS });
       return;
+    }
     case "type":
-      await (await find(page, step, "input")).pressSequentially(step.value, { delay: 15, timeout: ACTION_MS });
+      // Typing takes 15 ms per key: the limit grows with the text.
+      await (await find(page, step, "input")).pressSequentially(step.value, { delay: TYPE_DELAY_MS, timeout: ACTION_MS + step.value.length * TYPE_DELAY_MS * 2 });
       await afterAction(page);
       return;
     case "select":
@@ -156,7 +170,7 @@ const CONTROL_LABEL = `(el) => {
   const text = (el.innerText || "").replace(/\\s+/g, " ").trim();
   // Long text is a card or a row, not a button: its text and inner icons are not the label.
   const small = text.length <= 40;
-  return [el.getAttribute("aria-label"), labelledBy, el.getAttribute("title"), el.value, small ? icons(el) : "", small ? text : ""];
+  return [el.getAttribute("aria-label"), el.getAttribute("alt"), labelledBy, el.getAttribute("title"), el.value, small ? icons(el) : "", small ? text : ""];
 }`;
 // Locator.evaluate does not call a function given as a string; a Function built
 // from the text is sent as that text.
@@ -171,6 +185,23 @@ async function gate(loc: Locator, target: Target): Promise<void> {
   const label = [...new Set(parts)].join(" | ");
   const word = riskyWord(label);
   if (word) throw new StepError(`safety stop: "${label.slice(0, 60)}" looks like a ${word} action. Add the line allow to the chunk if the task needs it`);
+}
+
+// What lies on top of the element's center, as text the agent can match to the page.
+async function coverText(loc: Locator): Promise<string> {
+  const text = await loc
+    .evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      const top = el.ownerDocument.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) as HTMLElement | null;
+      if (!top || el.contains(top)) return "";
+      let box: HTMLElement | null = top;
+      // Climb to a box with some text: the panel or dialog, not an empty layer.
+      while (box && !(box.innerText || "").trim() && box.parentElement) box = box.parentElement;
+      const role = box?.getAttribute("role");
+      return `${role ? role + " " : ""}"${(box?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 80)}"`;
+    })
+    .catch(() => "");
+  return text && text !== '""' ? `: ${text}` : "";
 }
 
 // Native <select> first; otherwise a custom dropdown: open it and click the option.
@@ -206,7 +237,10 @@ function shortReason(e: Error): string {
   const first = e.message.split("\n")[0].replace(/^[a-zA-Z]+\.[a-zA-Z]+: /, "");
   if (/Timeout \d+ms exceeded/.test(first)) {
     const log = e.message;
-    if (/intercepts pointer events/.test(log)) return "another element covers it (a dialog or overlay?)";
+    if (/intercepts pointer events/.test(log)) {
+      const cover = [...log.matchAll(/(<[^>]{1,200}>)[^\n]*? intercepts pointer events/g)].pop()?.[1];
+      return `another element covers it${cover ? `: ${cover.slice(0, 120)}` : ""} (close it, or use press @ref Enter)`;
+    }
     if (/not enabled|disabled/.test(log)) return "it is disabled";
     if (/not visible/.test(log)) return "it is not visible";
     return `timed out after ${ACTION_MS / 1000}s`;

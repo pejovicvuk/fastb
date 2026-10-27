@@ -186,3 +186,22 @@ ${labels.map((text, i) => `  - generic [ref=e${i + 1}]: ${text}`).join("\n")}
 `);
   assert.deepEqual(out, labels.map((text, i) => `  @e${i + 1} ${JSON.stringify(text)}`));
 });
+
+test("named icons inside one clickable box keep their own refs", () => {
+  const out = run(`
+- generic [ref=e837] [cursor=pointer]:
+  - generic "Mark as read" [ref=e838]
+  - generic "Snooze" [ref=e839]
+  - generic "Add to tasks" [ref=e840]
+`);
+  assert.deepEqual(out, ["@e837", '  @e838 "Mark as read"', '  @e839 "Snooze"', '  @e840 "Add to tasks"']);
+});
+
+test("a card with one named image stays one line", () => {
+  const out = run(`
+- generic [ref=e1] [cursor=pointer]:
+  - img "Pizza" [ref=e2]
+  - heading [level=6] [ref=e3]: Little Caesars
+`);
+  assert.deepEqual(out, ['@e1 "Little Caesars"']);
+});

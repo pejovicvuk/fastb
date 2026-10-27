@@ -114,6 +114,18 @@ function isInteractive(n: SnapNode): boolean {
   return n.ref !== undefined && (INTERACTIVE.has(n.role) || "cursor" in n.attrs);
 }
 
+// A clickable box that holds two or more named icons (GoMail: "Mark as read",
+// "Snooze", "Add to tasks"). The snapshot marks only the box with a pointer
+// cursor, because the icons inherit it; mark the icons too, so each keeps its
+// own ref instead of being merged into the box's label.
+function markIconGroups(n: SnapNode): void {
+  if (isInteractive(n)) {
+    const icons = n.children.filter((c) => c.ref && c.name && !c.text && (c.role === "generic" || c.role === "img"));
+    if (icons.length >= 2) for (const c of icons) c.attrs.cursor ??= "pointer";
+  }
+  n.children.forEach(markIconGroups);
+}
+
 // Image names are used only when a block has no other text: they mostly repeat it.
 function collectText(n: SnapNode): string[] {
   const words = gather(n, false);
@@ -151,6 +163,7 @@ export function compact(nodes: SnapNode[], opts: CompactOptions = {}): string[] 
   const lines: string[] = [];
   const emit = (depth: number, s: string) => lines.push("  ".repeat(depth) + s);
   const hasInteractive = (n: SnapNode): boolean => n.children.some((c) => isInteractive(c) || hasInteractive(c));
+  nodes.forEach(markIconGroups);
 
   const visit = (n: SnapNode, depth: number) => {
     if (isInteractive(n)) {

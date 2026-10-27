@@ -86,3 +86,28 @@ test("safety gate ignores icons inside a large card", async (t) => {
   assert.equal(r.ok, true, r.failure?.reason);
   assert.equal(await page.title(), "opened");
 });
+
+test("safety gate reads an image's own alt (icon refs from icon groups)", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  await page.setContent(`<div style="cursor:pointer"><img alt="Delete" src="data:," width="20" height="20" onclick="document.title='deleted'"><img alt="Archive" src="data:," width="20" height="20"></div>`);
+  const ref = await refOf(page, 'img "Delete"');
+  const r = await run(`click @${ref}`);
+  assert.match(r.failure?.reason ?? "", /safety stop.*delete/);
+  assert.equal(await page.title(), "");
+});
+
+test("type finishes long text", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  await page.setContent(`<textarea aria-label="Note"></textarea>`);
+  const text = "a".repeat(250);
+  const r = await run(`type "Note" = ${text}\nexpect value "Note" = ${text}`);
+  assert.equal(r.ok, true, r.failure?.reason);
+});
+
+test("fill works on plaintext-only and inherited editable elements", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  await page.setContent(`<div contenteditable="plaintext-only" aria-label="Plain" role="textbox"></div>
+    <div contenteditable="true"><p aria-label="Inner" role="textbox">x</p></div>`);
+  const r = await run(`fill "Plain" = hello\nfill "Inner" = world\nexpect text "hello"\nexpect text "world"`);
+  assert.equal(r.ok, true, r.failure?.reason);
+});

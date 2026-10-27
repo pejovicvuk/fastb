@@ -9,7 +9,9 @@ export interface SettleOptions {
 // helper calls (for example esbuild's __name) that do not exist in the page.
 const QUIET_WINDOW = `({ quietMs, maxMs }) => new Promise((resolve) => {
   const loading = () =>
-    Array.from(document.querySelectorAll('[role="progressbar"], [aria-busy="true"]')).some((el) => {
+    // Only a spinner-type progressbar (no value) means loading; a bar with a value
+    // may be a static chart (Staynb rating bars).
+    Array.from(document.querySelectorAll('[role="progressbar"]:not([aria-valuenow]), [aria-busy="true"]')).some((el) => {
       const r = el.getBoundingClientRect();
       return r.width > 0 && r.height > 0;
     });

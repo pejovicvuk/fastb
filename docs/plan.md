@@ -55,10 +55,16 @@ Each phase ends with a "done when" check. Do not start the next phase before it 
   - In that run some clicks took 4 s (settle after navigation). Look at this in phase 4.
   - Gate words can hit harmless controls (GoMail "Remove star from email ..."). Count false stops in phase 4.
 
-### Phase 4 · First measurement and tuning (checkpoint)
-- [ ] `fastb-bench`: new setup "claude-code + fastb". Run the 22 tasks.
-- [ ] Read every failed and slow run. Fix the engine and the skill text. Re-run.
-- **Checkpoint:** at least 1.5x faster with the same success. If not, stay in phases 2–4 until it is.
+### Phase 4 · First measurement and tuning (checkpoint) · met 2026-10-27, Codex review passed
+- [x] `fastb-bench`: new setup "claude-code + fastb" (`run_fastb.py`, `run_all_fastb.sh`, `compare.py`). Ran the 22 tasks twice.
+- [x] Read the failed and slow runs. Fixed the engine and the skill text. Re-ran.
+- **Checkpoint:** at least 1.5x faster with the same success. **Met (just) 2026-10-27, run 2:** median 62 s -> 41 s (1.51x), success 13/22 -> 16/22, turns 27 -> 12, cost $5.61 -> $3.91. One run per task. Details: `docs/bench-2026-10-27.md`.
+- Lessons:
+  - Run 1 halved the turns but not the time: fastb's own waits were 42% of the total. Read where the time goes before tuning the model side.
+  - A progressbar with a value is not a loading sign (Staynb rating bars).
+  - Waiting does not bring back a gone ref. Saying what covers a button saves turns.
+  - Agents still send short chunks when they explore a new page. Long chunks come when the page is known.
+- Next (optional, before phase 7): read the 6 tasks both setups fail (fly-unified x3, opendining-3/4, topwork-1).
 
 ### Phase 5 · Draft and verify (Meta model at the core)
 - [ ] Drafter: Meta open-weight model (Muse Spark Open via partner inference, or Muse Glimmer local) gets goal + page text and proposes the next chunk.

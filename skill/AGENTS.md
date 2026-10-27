@@ -60,4 +60,4 @@ One step per line. Values need no quotes. Labels and names go in double quotes.
 - A field with no name: use its ref.
 - Safety stop: a click on a send / delete / pay / checkout / order / book control stops the run. When the task asks you to send, delete, buy, order or book, put the line `allow` in your runs from the start.
 - Do not add `wait 500ms` after clicks. fastb already waits until the page stops changing. Use `wait for text "X"` only for slow results.
-- Use only `fastb` for the browser. Do not take screenshots unless the page text is not enough (`fastb look --shot` saves one and prints its path).
+- Use only `fastb` for the browser. The page text is enough: do not take screenshots.

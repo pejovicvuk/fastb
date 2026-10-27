@@ -61,7 +61,8 @@ function tiers(page: Page, t: Extract<Target, { kind: "text" }>, purpose: Purpos
       return [true, false].flatMap((exact) => [anyRole(page, CHECK_ROLES, name, exact), byLabel(exact)]);
     case "click":
       return [
-        ...[true, false].flatMap((exact) => [anyRole(page, CLICK_ROLES, name, exact), byText(exact), page.getByTitle(name, { exact })]),
+        // byLabel: icons named only by aria-label (no role, no text).
+        ...[true, false].flatMap((exact) => [anyRole(page, CLICK_ROLES, name, exact), byText(exact), page.getByTitle(name, { exact }), byLabel(exact)]),
         page.locator(ROLE_CSS.button).filter({ hasText: name }),
       ];
   }
@@ -77,7 +78,8 @@ export async function resolveTarget(page: Page, t: Target, purpose: Purpose, tim
   if (t.kind === "ref") {
     const loc = page.getByRef(t.ref);
     try {
-      await loc.waitFor({ state: "attached", timeout: timeoutMs });
+      // A ref names an element from the latest snapshot: it is there or gone for good.
+      await loc.waitFor({ state: "attached", timeout: Math.min(timeoutMs, 500) });
       return { ok: true, locator: loc };
     } catch {
       return { ok: false, reason: `ref @${t.ref} not found (refs change after the page updates: run look again)` };
