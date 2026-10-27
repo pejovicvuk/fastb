@@ -6,3 +6,4 @@ export const SOCKET = join(HOME, "engine.sock");
 export const ENGINE_LOG = join(HOME, "engine.log");
 export const PROFILE_DIR = join(HOME, "profile");
 export const SHOTS_DIR = join(HOME, "shots");
+export const STATS = join(HOME, "stats.jsonl");

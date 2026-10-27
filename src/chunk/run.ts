@@ -1,7 +1,8 @@
 import type { Locator, Page } from "playwright-core";
 import { settle } from "../browser/settle.ts";
 import { withScheme } from "../browser/url.ts";
-import type { ParsedStep, Step } from "./parse.ts";
+import type { ParsedStep, Step, Target } from "./parse.ts";
+import { riskyWord } from "./safety.ts";
 import { resolveTarget, type Purpose } from "./target.ts";
 
 const ACTION_MS = 5000;
@@ -35,9 +36,10 @@ class StepError extends Error {
 // `currentPage` is asked before every step: a click may open a new tab.
 export async function runChunk(currentPage: () => Promise<Page>, steps: ParsedStep[]): Promise<RunResult> {
   const started = Date.now();
+  const allow = steps.some((s) => s.step.op === "allow");
   for (let i = 0; i < steps.length; i++) {
     try {
-      await runStep(await currentPage(), steps[i].step);
+      await runStep(await currentPage(), steps[i].step, allow);
     } catch (err) {
       const e = err as Error;
       return {
@@ -62,16 +64,21 @@ async function find(page: Page, step: Extract<Step, { target?: unknown }>, purpo
 // After a step that may change the page, wait briefly for it to settle.
 const afterAction = (page: Page) => settle(page, { quietMs: 200, maxMs: 3000 });
 
-async function runStep(page: Page, step: Step): Promise<void> {
+async function runStep(page: Page, step: Step, allow: boolean): Promise<void> {
   switch (step.op) {
+    case "allow":
+      return;
     case "goto":
       await page.goto(withScheme(step.url), { waitUntil: "domcontentloaded", timeout: 30000 });
       await settle(page);
       return;
-    case "click":
-      await (await find(page, step, "click")).click({ timeout: ACTION_MS });
+    case "click": {
+      const loc = await find(page, step, "click");
+      if (!allow) await gate(loc, step.target);
+      await loc.click({ timeout: ACTION_MS });
       await afterAction(page);
       return;
+    }
     case "hover":
       await (await find(page, step, "click")).hover({ timeout: ACTION_MS });
       await afterAction(page);
@@ -133,6 +140,22 @@ async function runStep(page: Page, step: Step): Promise<void> {
       return;
     }
   }
+}
+
+// Stops a click on a delete / pay / send control unless the chunk says "allow".
+async function gate(loc: Locator, target: Target): Promise<void> {
+  const own = await loc
+    .evaluate((node) => {
+      const el = node as HTMLInputElement;
+      const text = (el.innerText || "").replace(/\s+/g, " ").trim();
+      // Long text is a card or a row, not a button label.
+      return [el.getAttribute("aria-label"), el.getAttribute("title"), el.value, text.length <= 40 ? text : ""];
+    })
+    .catch(() => []);
+  const parts = [target.kind === "text" ? target.text : "", ...own].map((p) => String(p ?? "").trim()).filter(Boolean);
+  const label = [...new Set(parts)].join(" | ");
+  const word = riskyWord(label);
+  if (word) throw new StepError(`safety stop: "${label.slice(0, 60)}" looks like a ${word} action. Add the line allow to the chunk if the task needs it`);
 }
 
 // Native <select> first; otherwise a custom dropdown: open it and click the option.

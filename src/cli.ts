@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ENGINE_LOG, HOME, SOCKET } from "./paths.ts";
 import type { EngineOptions, Request, Response } from "./protocol.ts";
+import { readStats, summarize } from "./engine/stats.ts";
 
 const USAGE = `fastb: fast browser for AI agents
 
@@ -19,6 +20,10 @@ const USAGE = `fastb: fast browser for AI agents
     expect text "Welcome"
   EOF
   fastb run --file steps.txt    (or pass each step as an argument)
+                          after a run: only what changed on the page (--no-look: only the page title)
+                          clicks on delete / pay / send / order controls stop the run;
+                          add the line "allow" to the chunk when the task needs them
+  fastb stats             commands, steps and characters saved so far
   fastb status            show engine and browser state
   fastb stop              close the browser and stop the engine
 
@@ -112,6 +117,10 @@ function readChunk(req: Request): void {
 const req = parse(process.argv.slice(2));
 if (!req) {
   console.log(USAGE);
+  process.exit(0);
+}
+if (req.cmd === "stats") {
+  console.log(summarize(readStats()));
   process.exit(0);
 }
 if (req.cmd === "run") readChunk(req);

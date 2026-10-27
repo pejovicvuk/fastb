@@ -23,9 +23,17 @@ const MARK_EDITORS = `(() => {
   }
 })()`;
 
-export async function look(page: Page, opts: { full?: boolean } = {}): Promise<string> {
+async function snapshot(page: Page): Promise<string> {
   await page.evaluate(MARK_EDITORS).catch(() => {});
-  const raw = await page.ariaSnapshot({ mode: "ai", timeout: 10000 });
-  const body = opts.full ? raw : compact(parseSnapshot(raw)).join("\n");
+  return page.ariaSnapshot({ mode: "ai", timeout: 10000 });
+}
+
+// The page as compact lines (no header): what the agent sees, and what diffs compare.
+export async function pageLines(page: Page): Promise<string[]> {
+  return compact(parseSnapshot(await snapshot(page)));
+}
+
+export async function look(page: Page, opts: { full?: boolean } = {}): Promise<string> {
+  const body = opts.full ? await snapshot(page) : (await pageLines(page)).join("\n");
   return `${await pageHeader(page)}\n${body}`;
 }

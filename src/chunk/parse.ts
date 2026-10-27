@@ -7,6 +7,7 @@
 //   press Enter
 //   wait for text "Saved"
 //   expect url /dashboard
+//   allow            (lets this chunk click delete / pay / send controls)
 // Blank lines and lines starting with # are ignored.
 
 export type Target =
@@ -22,7 +23,8 @@ export type Step =
   | { op: "wait for text" | "wait for gone"; text: string }
   | { op: "expect text" | "expect no text"; text: string }
   | { op: "expect url"; text: string }
-  | { op: "expect value"; target: Target; value: string };
+  | { op: "expect value"; target: Target; value: string }
+  | { op: "allow" };
 
 export interface ParsedStep {
   line: number; // 1-based line in the chunk
@@ -159,6 +161,9 @@ export function parseStep(source: string, line: number): Step {
       const op = kind === "no text" ? "expect no text" : kind === "url" ? "expect url" : "expect text";
       return { op, text: valueOf(e[2].trim()) };
     }
+    case "allow":
+      if (rest) throw new ParseError(line, "allow takes nothing after it");
+      return { op: "allow" };
     default:
       throw new ParseError(line, `unknown step "${verb}"`);
   }

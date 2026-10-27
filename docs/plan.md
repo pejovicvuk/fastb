@@ -41,12 +41,19 @@ Each phase ends with a "done when" check. Do not start the next phase before it 
   - The saved profile keeps site data between runs (a stale draft broke the recipient). Benchmarks use `--fresh`.
   - GoMail's "To" field needs the suggestion clicked, not just text.
 
-### Phase 3 · Changes-only feedback and agent link
-- [ ] Snapshot diff: after a chunk, return only what changed (added / removed / changed lines).
-- [ ] Safety gate: delete / pay / send / submit-order words stop the chunk unless `allow`.
-- [ ] Stats log (`~/.fastb/stats.jsonl`) and `fastb stats`.
-- [ ] Skill file for Claude Code (and AGENTS.md text for Codex).
-- **Done when:** Claude Code finishes a REAL task using only fastb.
+### Phase 3 · Changes-only feedback and agent link · done 2026-10-27 (review pending)
+- [x] Snapshot diff: after a chunk, return only what changed since the agent's last view (`+` added, `-` removed, `~` same ref with a new value or state, plus the section headers above each change). Full page instead when there is no base, the tab changed, or the changes are not much shorter (over 70% of the full page).
+- [x] Safety gate: a click on a delete / pay / checkout / send / order / book control stops the chunk unless it has an `allow` line.
+- [x] Stats log (`~/.fastb/stats.jsonl`, no page text or urls) and `fastb stats` (runs, steps, chars sent, chars saved by diffs).
+- [x] Skill file for Claude Code (`skill/fastb/SKILL.md`) and the same text for Codex (`skill/AGENTS.md`).
+- **Done when:** Claude Code finishes a REAL task using only fastb. **Met 2026-10-27:** `claude -p` (sonnet) with only `Bash(fastb:*)` and the skill did dashdish-2 (order a pizza): reward 1, 10 turns, 57 s, $0.18. One run only, not a benchmark number (baseline row: 85 s, 33 turns). Script: `.fastb/agent-run.sh <task-id>`.
+- Lessons:
+  - Playwright keeps a ref while the element keeps its role and name, so "same ref, new text" is one changed element.
+  - Ref prefixes (`f1e`, `f2e`) change on a real navigation: every ref is new and the diff falls back to the full page. That is correct.
+  - GoMail hides all aria labels while the compose dialog is open, so the first click after open changes every ref (full page once).
+  - The agent first wrote short chunks with `wait 1000ms` after clicks, and hit the safety stop at "Checkout" although the task said "purchase". Skill text now says: no fixed waits; put `allow` in from the start when the task asks for it.
+  - In that run some clicks took 4 s (settle after navigation). Look at this in phase 4.
+  - Gate words can hit harmless controls (GoMail "Remove star from email ..."). Count false stops in phase 4.
 
 ### Phase 4 · First measurement and tuning (checkpoint)
 - [ ] `fastb-bench`: new setup "claude-code + fastb". Run the 22 tasks.

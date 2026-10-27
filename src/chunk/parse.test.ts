@@ -72,3 +72,8 @@ test("reports bad lines with their number", () => {
   assert.throws(() => parseChunk("dance now"), /unknown step "dance"/);
   assert.throws(() => parseChunk('fill "Email"'), /fill needs/);
 });
+
+test("allow is a step with nothing after it", () => {
+  assert.deepEqual(parseStep("allow", 1), { op: "allow" });
+  assert.throws(() => parseStep("allow send", 1), /allow takes nothing/);
+});

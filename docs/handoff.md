@@ -14,18 +14,15 @@ A fast browser-execution engine for AI coding agents (Claude Code, Codex). The a
 
 ## State now
 
-- Repo: `~/Developer/fastb` (moved from `~/Desktop/fastb` today). GitHub: `pejovicvuk/fastb`, **public**.
-- **Phase 1 (engine skeleton) and phase 2 (chunks) are done** and ticked in `docs/plan.md`. 17 unit tests pass (`npm test`). Build: `npm run build`.
-- Proof: REAL task gomail-3 passes the benchmark checker (reward 1) with one 6-step chunk in 0.9 s (baseline: 51 s, 12 turns; not yet a full-loop comparison).
-- **Nothing of phases 1–2 is committed yet.** Commit message is ready in `docs/handoff-commit-msg.txt`.
-- The `init` commit was rewritten locally to remove the private participant guide (now in `~/.fastb/private/`). **Local and origin have diverged; I still need to run** `git push --force-with-lease origin main` (one-time exception to "never force push").
-- Codex plugin is installed and logged in (`/codex:adversarial-review`, `/codex:rescue`). Review of phases 1–2 has not run yet.
+- Repo: `~/Developer/fastb`. GitHub: `pejovicvuk/fastb`, **public**. History cleaned and force-pushed 2026-10-27 (the private guide is out of `main`).
+- **Phases 1, 2 and 3 are done** and ticked in `docs/plan.md`. Phases 1–2 are committed and pushed. Phase 3 is not committed yet; its message is in `.fastb/commit-msg.txt`.
+- Phase 3 proof: `claude -p` with only fastb did REAL dashdish-2 (reward 1, 10 turns, 57 s, one run). Script: `.fastb/agent-run.sh <task-id>`.
+- Codex review of phases 1–3 has not run yet.
 
 ## Next steps
 
-1. Remind me to: force-push the cleaned history, run `/codex:adversarial-review` on phases 1–2, then commit with `git commit -F docs/handoff-commit-msg.txt` and push. Then delete `docs/handoff-commit-msg.txt`.
-2. Start **phase 3** (see `docs/plan.md`): snapshot diff (return only what changed after a chunk), safety gate (delete/pay/send words need `allow`), stats log + `fastb stats`, skill file for Claude Code and AGENTS text for Codex. Done when Claude Code finishes a REAL task using only fastb.
-3. Then **phase 4**: add a "claude-code + fastb" setup to `~/Desktop/fastb-bench` (copy `run_baseline.py`; Claude must use only `fastb` via Bash, browser via `--cdp` to the harness Chrome or `--fresh`), run the same 22 tasks, compare. Checkpoint: at least 1.5x faster with the same success.
+1. Remind me to: run `/codex:adversarial-review` on phases 1–3, then commit with `git commit -F .fastb/commit-msg.txt` and push.
+2. Start **phase 4** (see `docs/plan.md`): add a "claude-code + fastb" setup to `~/Desktop/fastb-bench` (copy `run_baseline.py`; base it on `.fastb/agent-run.sh`: skill in `<cwd>/.claude/skills/fastb`, `--allowedTools "Bash(fastb:*)" Skill`, browser via `--cdp` to the harness Chrome or `--fresh`), run the same 22 tasks, compare. Checkpoint: at least 1.5x faster with the same success.
 
 ## Handy tools (gitignored, in `.fastb/`)
 
