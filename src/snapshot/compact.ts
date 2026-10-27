@@ -173,7 +173,24 @@ export function compact(nodes: SnapNode[], opts: CompactOptions = {}): string[] 
       }
       if (text.length) {
         const prefix = n.role === "heading" ? "# " : n.role === "alert" ? "! " : "";
-        emit(depth, prefix + clip(text.join(" · "), maxText));
+        const merged = text.join(" · ");
+        if (merged.length <= maxText) {
+          emit(depth, prefix + merged);
+        } else if (n.role === "row") {
+          // A row keeps all its cells on one line; only a long cell is cut.
+          emit(depth, prefix + text.map((t) => clip(t, maxText)).join(" · "));
+        } else if (!n.children.length) {
+          emit(depth, prefix + clip(merged, maxText));
+        } else {
+          // Split large blocks instead of hiding later rows or paragraphs.
+          const own = collectText({ ...n, children: [] }).join(" · ");
+          if (own) emit(depth, prefix + own);
+          const firstChildLine = lines.length;
+          for (const c of n.children) visit(c, depth + 1);
+          if (prefix && !own && lines.length > firstChildLine) {
+            lines[firstChildLine] = lines[firstChildLine].replace(/^(\s*)/, `$1${prefix}`);
+          }
+        }
       }
       return;
     }

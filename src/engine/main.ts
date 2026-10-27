@@ -1,54 +1,25 @@
 import { createServer, type Socket } from "node:net";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import type { Page } from "playwright-core";
 import { HOME, SHOTS_DIR, SOCKET } from "../paths.ts";
 import type { Request, Response } from "../protocol.ts";
 import { Session } from "../browser/session.ts";
 import { settle } from "../browser/settle.ts";
-import { look, pageHeader, pageLines } from "../snapshot/look.ts";
-import { diffPage } from "../snapshot/diff.ts";
+import { look, pageHeader } from "../snapshot/look.ts";
+import { forgetView, runReport, showChanges, showPage } from "./view.ts";
 import { appendStat, type StatRow } from "./stats.ts";
+import { lockPort, takeLock } from "./lock.ts";
 import { withScheme } from "../browser/url.ts";
 import { parseChunk, ParseError } from "../chunk/parse.ts";
 import { runChunk } from "../chunk/run.ts";
 
 const IDLE_EXIT_MS = 30 * 60 * 1000;
 
-// Changes are sent only when they are clearly shorter than the full page.
-const DIFF_MAX_SHARE = 0.7;
-
 const session = new Session();
 let queue: Promise<unknown> = Promise.resolve();
 let idleTimer: NodeJS.Timeout | undefined;
-// The page as the agent last saw it: the base for "only what changed".
-let seen: { page: Page; lines: string[] } | undefined;
 
 type Handled = Response & { stat?: Partial<StatRow> };
-
-async function showPage(page: Page): Promise<string> {
-  const lines = await pageLines(page);
-  seen = { page, lines };
-  return `${await pageHeader(page)}\n${lines.join("\n")}`;
-}
-
-// After a chunk: only what changed since the agent last saw this page, or the
-// full page when there is no base or the changes are not much shorter.
-async function showChanges(page: Page): Promise<{ text: string; full?: number }> {
-  const header = await pageHeader(page);
-  const lines = await pageLines(page);
-  const before = seen?.page === page ? seen.lines : undefined;
-  seen = { page, lines };
-  const fullText = `${header}\n${lines.join("\n")}`;
-  if (!before) return { text: fullText };
-  const d = diffPage(before, lines);
-  const changes = d.lines.length
-    ? `changes since the last view (+${d.added} -${d.removed} ~${d.changed}):\n${d.lines.join("\n")}`
-    : "no changes on the page";
-  const text = `${header}\n${changes}`;
-  if (text.length > fullText.length * DIFF_MAX_SHARE) return { text: fullText };
-  return { text, full: fullText.length };
-}
 
 async function handle(req: Request): Promise<Handled> {
   switch (req.cmd) {
@@ -59,7 +30,7 @@ async function handle(req: Request): Promise<Handled> {
       await page.goto(withScheme(url), { waitUntil: "domcontentloaded", timeout: 30000 });
       await settle(page);
       if (req.flags.quiet) {
-        seen = undefined;
+        forgetView();
         return ok(`opened ${page.url()}`);
       }
       return ok(await showPage(page)); // the agent always looks after opening: save it a turn
@@ -86,20 +57,11 @@ async function handle(req: Request): Promise<Handled> {
       }
       if (!steps.length) return fail("not run: the chunk has no steps");
       const result = await runChunk(() => session.page(req.options), steps);
-      const page = await session.page(req.options);
-      const secs = (result.ms / 1000).toFixed(1);
-      const lines: string[] = [];
-      if (result.ok) lines.push(`OK ${result.done}/${result.total} steps ${secs}s`);
-      else {
-        const f = result.failure!;
-        lines.push(`STOP at step ${f.index + 1}/${result.total}: ${f.source}`);
-        lines.push(`reason: ${f.reason}`);
-        if (f.choices) lines.push("choices (add #n to the target):", ...f.choices.map((c) => "  " + c));
-        lines.push(result.done ? `done: steps 1-${result.done} in ${secs}s` : `done: none (${secs}s)`);
-      }
-      const view = req.flags["no-look"] ? { text: await pageHeader(page) } : await showChanges(page);
-      lines.push(view.text);
-      return { ok: result.ok, text: lines.join("\n"), stat: { steps: result.total, done: result.done, full: view.full } };
+      const report = await runReport(result, async () => {
+        const page = await session.page(req.options);
+        return req.flags["no-look"] ? { text: await pageHeader(page) } : showChanges(page);
+      });
+      return { ok: result.ok, text: report.text, stat: { steps: result.total, done: result.done, full: report.full } };
     }
     case "status":
       return ok(`engine: running (pid ${process.pid})\n${session.describe()}`);
@@ -113,6 +75,7 @@ async function handle(req: Request): Promise<Handled> {
 }
 
 const ok = (text: string): Response => ({ ok: true, text });
+const firstLine = (err: unknown) => (err instanceof Error ? err.message : String(err)).split("\n")[0];
 const fail = (text: string): Response => ({ ok: false, text });
 
 function onConnection(sock: Socket): void {
@@ -134,7 +97,7 @@ function onConnection(sock: Socket): void {
         req = JSON.parse(line) as Request;
         res = await handle(req);
       } catch (err) {
-        res = fail(`error: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`);
+        res = fail(`error: ${firstLine(err)}`);
       }
       const { stat, ...reply } = res;
       sock.end(JSON.stringify(reply) + "\n");
@@ -159,7 +122,14 @@ async function shutdown(): Promise<void> {
 }
 
 mkdirSync(HOME, { recursive: true });
-rmSync(SOCKET, { force: true }); // the CLI only starts us when no engine answers
+const port = lockPort(HOME);
+if (!(await takeLock(port))) {
+  // Another engine runs or is starting; the CLI connects to that one.
+  // (If some other program uses this port, set FASTB_LOCK_PORT.)
+  console.error(`fastb engine: lock port ${port} is taken; exiting (pid ${process.pid})`);
+  process.exit(0);
+}
+rmSync(SOCKET, { force: true }); // we hold the lock: any socket left here is stale
 const server = createServer(onConnection);
 server.listen(SOCKET, () => console.error(`fastb engine listening on ${SOCKET} (pid ${process.pid})`));
 resetIdle();

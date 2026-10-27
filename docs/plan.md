@@ -16,7 +16,7 @@ Claude Code + Playwright MCP on 22 REAL tasks: 62 s, 27 turns, $0.25 per task (m
 
 Each phase ends with a "done when" check. Do not start the next phase before it passes, except where noted.
 
-### Phase 1 · Engine skeleton · done 2026-10-27 (review pending)
+### Phase 1 · Engine skeleton · done 2026-10-27, Codex review passed
 - [x] Background engine + thin CLI, talking over a local socket. CLI starts the engine if it is not running.
 - [x] Browser link: launch Chrome (own profile, `--headless` optional), or connect to a running Chrome over CDP (`--cdp http://127.0.0.1:9222`). Options stick until changed.
 - [x] `fastb open <url>` (prints the page, `--quiet` to skip), `fastb look` (page as short text with refs: `@e3 button "Save"`), `look --shot`, `look --full`, `status`, `stop`.
@@ -25,7 +25,7 @@ Each phase ends with a "done when" check. Do not start the next phase before it 
 - **Done when:** `fastb open` + `fastb look` work on a REAL site from the terminal. **Met 2026-10-27** (GoMail, DashDish; own Chrome, headless, CDP).
 - Notes: GoMail has a built-in ~6.5 s fake loading screen. `look` on a settled page: ~0.4 s. CLI start (node, built): ~25 ms.
 
-### Phase 2 · Chunks · done 2026-10-27 (review pending)
+### Phase 2 · Chunks · done 2026-10-27, Codex review passed
 - [x] Line-format parser: `goto`, `click`, `hover`, `check`/`uncheck`, `fill "X" = v`, `type`, `select`, `press [target] Key`, `wait 500ms`, `wait for text|gone "X"`, `expect text|no text|url|value`. Targets: `@ref`, `"Label"`, `role "Name"`, `#n`.
 - [x] Target resolution, in tiers: role + exact name → label/placeholder → text → loose matches → HTML fallbacks (`button` that contains the text). More than one match → stop and list the choices (`#n`).
 - [x] Smart waits: elements are searched again until 5 s; after clicks and key presses the page settles (quiet 200 ms, max 3 s). No "page idle".
@@ -41,7 +41,7 @@ Each phase ends with a "done when" check. Do not start the next phase before it 
   - The saved profile keeps site data between runs (a stale draft broke the recipient). Benchmarks use `--fresh`.
   - GoMail's "To" field needs the suggestion clicked, not just text.
 
-### Phase 3 · Changes-only feedback and agent link · done 2026-10-27 (review pending)
+### Phase 3 · Changes-only feedback and agent link · done 2026-10-27, Codex review passed
 - [x] Snapshot diff: after a chunk, return only what changed since the agent's last view (`+` added, `-` removed, `~` same ref with a new value or state, plus the section headers above each change). Full page instead when there is no base, the tab changed, or the changes are not much shorter (over 70% of the full page).
 - [x] Safety gate: a click on a delete / pay / checkout / send / order / book control stops the chunk unless it has an `allow` line.
 - [x] Stats log (`~/.fastb/stats.jsonl`, no page text or urls) and `fastb stats` (runs, steps, chars sent, chars saved by diffs).

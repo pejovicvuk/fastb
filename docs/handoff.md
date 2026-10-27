@@ -17,11 +17,11 @@ A fast browser-execution engine for AI coding agents (Claude Code, Codex). The a
 - Repo: `~/Developer/fastb`. GitHub: `pejovicvuk/fastb`, **public**. History cleaned and force-pushed 2026-10-27 (the private guide is out of `main`).
 - **Phases 1, 2 and 3 are done** and ticked in `docs/plan.md`. Phases 1–2 are committed and pushed. Phase 3 is not committed yet; its message is in `.fastb/commit-msg.txt`.
 - Phase 3 proof: `claude -p` with only fastb did REAL dashdish-2 (reward 1, 10 turns, 57 s, one run). Script: `.fastb/agent-run.sh <task-id>`.
-- Codex review of phases 1–3 has not run yet.
+- Codex adversarial review of phases 1–3: 5 rounds, all findings fixed, last verdict "approve".
 
 ## Next steps
 
-1. Remind me to: run `/codex:adversarial-review` on phases 1–3, then commit with `git commit -F .fastb/commit-msg.txt` and push.
+1. Remind me to commit the review fixes with `git commit -F .fastb/commit-msg.txt` and push, if not done.
 2. Start **phase 4** (see `docs/plan.md`): add a "claude-code + fastb" setup to `~/Desktop/fastb-bench` (copy `run_baseline.py`; base it on `.fastb/agent-run.sh`: skill in `<cwd>/.claude/skills/fastb`, `--allowedTools "Bash(fastb:*)" Skill`, browser via `--cdp` to the harness Chrome or `--fresh`), run the same 22 tasks, compare. Checkpoint: at least 1.5x faster with the same success.
 
 ## Handy tools (gitignored, in `.fastb/`)

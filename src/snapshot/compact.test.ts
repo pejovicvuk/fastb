@@ -112,3 +112,77 @@ test("ignores property lines and handles escaped quotes", () => {
 `);
   assert.deepEqual(out, ['@e1 link "Say \\"hi\\""']);
 });
+
+test("keeps every row of a long static table and exposes a last-row change", () => {
+  const table = (lastStatus: string) => `
+- table "Invoices":
+  - rowgroup:
+${Array.from({ length: 12 }, (_, i) => `    - row:
+      - cell: Invoice ${i + 1}
+      - cell: $100.00
+      - cell: ${i === 11 ? lastStatus : "unpaid"}`).join("\n")}
+`;
+  const before = run(table("unpaid"));
+  const after = run(table("paid"));
+  assert.deepEqual(before, [
+    "Invoices",
+    ...Array.from({ length: 12 }, (_, i) => `    Invoice ${i + 1} · $100.00 · unpaid`),
+  ]);
+  assert.deepEqual(after.slice(0, -1), before.slice(0, -1));
+  assert.equal(after.at(-1), "    Invoice 12 · $100.00 · paid");
+  assert.notDeepEqual(after, before);
+});
+
+test("splits a long static block into one line per paragraph", () => {
+  const paragraphs = Array.from({ length: 8 }, (_, i) =>
+    `Paragraph ${i + 1} contains useful page content.`,
+  );
+  const out = run(`
+- generic:
+${paragraphs.map((text) => `  - paragraph: ${text}`).join("\n")}
+`);
+  assert.deepEqual(out, paragraphs.map((text) => `  ${text}`));
+});
+
+test("keeps all cells of a long row; only the long cell is cut", () => {
+  const description = "Invoice description ".repeat(12).trim();
+  const out = run(`
+- table:
+  - row:
+    - cell: ${description}
+    - cell: $500.00
+    - cell: paid
+`);
+  assert.deepEqual(out, [`  ${description.slice(0, 159)}… · $500.00 · paid`]);
+});
+
+test("splits at a custom maxText and still clips a long leaf", () => {
+  const out = compact(parseSnapshot(`
+- generic:
+  - paragraph: first paragraph
+  - paragraph: second paragraph
+- paragraph: ${"x".repeat(40)}
+`), { maxText: 20 });
+  assert.deepEqual(out, ["  first paragraph", "  second paragraph", `${"x".repeat(19)}…`]);
+});
+
+test("keeps heading and alert prefixes when splitting their children", () => {
+  for (const [role, prefix] of [["heading", "# "], ["alert", "! "]]) {
+    const first = "First part ".repeat(10).trim();
+    const second = "Second part ".repeat(10).trim();
+    assert.deepEqual(run(`
+- ${role}:
+  - text: ${first}
+  - text: ${second}
+`), [`  ${prefix}${first}`, `  ${second}`]);
+  }
+});
+
+test("keeps short standalone label refs after splitting a long block", () => {
+  const labels = Array.from({ length: 12 }, (_, i) => `Standalone label ${i + 1}`);
+  const out = run(`
+- generic:
+${labels.map((text, i) => `  - generic [ref=e${i + 1}]: ${text}`).join("\n")}
+`);
+  assert.deepEqual(out, labels.map((text, i) => `  @e${i + 1} ${JSON.stringify(text)}`));
+});

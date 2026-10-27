@@ -142,17 +142,32 @@ async function runStep(page: Page, step: Step, allow: boolean): Promise<void> {
   }
 }
 
+// The words a control is known by, read in the page. Plain JS text: a transpiled
+// function may carry helpers (__name) that the page does not have.
+const CONTROL_LABEL = `(el) => {
+  const icons = (e) => Array.from(e.querySelectorAll("img[alt], svg title, [aria-label]")).slice(0, 5)
+    .map((c) => c.getAttribute("aria-label") || c.getAttribute("alt") || c.textContent || "").join(" ");
+  // An element that names another (aria-labelledby, looked up in the control's own
+  // document or shadow root): all its words, so none can hide behind another.
+  const nameOf = (e) => !e ? "" :
+    [e.getAttribute("aria-label"), e.getAttribute("alt"), e.getAttribute("title"), e.textContent, icons(e)].filter(Boolean).join(" ");
+  const labelledBy = (el.getAttribute("aria-labelledby") || "").split(/\\s+/).filter(Boolean)
+    .map((id) => nameOf((el.getRootNode().getElementById ? el.getRootNode() : el.ownerDocument).getElementById(id))).join(" ");
+  const text = (el.innerText || "").replace(/\\s+/g, " ").trim();
+  // Long text is a card or a row, not a button: its text and inner icons are not the label.
+  const small = text.length <= 40;
+  return [el.getAttribute("aria-label"), labelledBy, el.getAttribute("title"), el.value, small ? icons(el) : "", small ? text : ""];
+}`;
+// Locator.evaluate does not call a function given as a string; a Function built
+// from the text is sent as that text.
+const controlLabel = new Function("el", `return (${CONTROL_LABEL})(el);`) as (el: Element) => unknown;
+
 // Stops a click on a delete / pay / send control unless the chunk says "allow".
 async function gate(loc: Locator, target: Target): Promise<void> {
-  const own = await loc
-    .evaluate((node) => {
-      const el = node as HTMLInputElement;
-      const text = (el.innerText || "").replace(/\s+/g, " ").trim();
-      // Long text is a card or a row, not a button label.
-      return [el.getAttribute("aria-label"), el.getAttribute("title"), el.value, text.length <= 40 ? text : ""];
-    })
-    .catch(() => []);
-  const parts = [target.kind === "text" ? target.text : "", ...own].map((p) => String(p ?? "").trim()).filter(Boolean);
+  const own = await loc.evaluate(controlLabel).catch(() => null);
+  // Fail closed: a control we cannot read may be the one the gate exists for.
+  if (!Array.isArray(own)) throw new StepError("safety stop: could not read this control's label. Add the line allow to the chunk if the task needs it");
+  const parts = [target.kind === "text" ? target.text : "", ...own].map((p) => String(p ?? "").replace(/\s+/g, " ").trim()).filter(Boolean);
   const label = [...new Set(parts)].join(" | ");
   const word = riskyWord(label);
   if (word) throw new StepError(`safety stop: "${label.slice(0, 60)}" looks like a ${word} action. Add the line allow to the chunk if the task needs it`);
