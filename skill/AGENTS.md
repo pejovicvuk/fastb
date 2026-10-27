@@ -47,7 +47,9 @@ One step per line. Values need no quotes. Labels and names go in double quotes.
 ## How to work
 
 1. `fastb open <url>` once. Read the page.
-2. Plan the whole task, or as far as the page lets you. Send it as one `fastb run`. Add `expect` lines where you want proof that a step worked.
+2. Plan the whole task, or as far as you can guess it. Send it as one `fastb run`. Add `expect` lines where you want proof that a step worked.
+   - You do not need a ref to act. Target by visible text (`click "Add to cart"`, `click button "Next"`), also for elements that appear only after an earlier step in the same run (a menu item, a dialog button, the next page). fastb waits up to 5 s for each one.
+   - A wrong guess costs nothing extra: the run stops at that step and shows you the page. So keep going: after a step that opens a menu, dialog or page, put the steps inside it in the same run.
 3. Read the result:
    - `OK 6/6 steps` and then **only what changed** since your last view: `+` new line, `-` gone line, `~` same element with a new value or state. Lines with no mark are section names, for context.
    - `STOP at step 4/6`: steps 1 to 3 are done. Read the reason and the changes. Send a new run that fixes step 4 and does the rest. Do not repeat the steps that are done.

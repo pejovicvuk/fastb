@@ -64,6 +64,8 @@ Each phase ends with a "done when" check. Do not start the next phase before it 
   - A progressbar with a value is not a loading sign (Staynb rating bars).
   - Waiting does not bring back a gone ref. Saying what covers a button saves turns.
   - Agents still send short chunks when they explore a new page. Long chunks come when the page is known.
+- Run 3 (2026-10-27, fastb text in CLAUDE.md + "chain ahead" skill text): median 62 s -> 33 s (1.89x), success 13/22 -> 15/22, turns 27 -> 10, cost $5.61 -> $3.57.
+- Decision (2026-10-27): no draft-and-verify. Claude Code and Codex stay the agents; the Meta model works inside fastb (see phase 5).
 - Next (optional, before phase 7): read the 6 tasks both setups fail (fly-unified x3, opendining-3/4, topwork-1).
 
 ### Phase 5 · Draft and verify (Meta model at the core)
