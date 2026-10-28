@@ -20,6 +20,14 @@ A fast browser-execution engine for AI coding agents (Claude Code, Codex). The a
 - Codex review of phases 5-7: 9 rounds, all findings fixed; stopped by plan (A). Known limits in docs/plan.md (phase 7).
 - Remote check switch: a person writes `on` to `~/.fastb/remote-check` (removed now). Bench harnesses write it before a run and remove it after.
 
+## Phase 8 in progress (2026-10-29)
+
+- Part 1 running: Codex + fastb x1 (`run_all_codex.sh` -> `results/codex-r1.jsonl`), then Claude Code + fastb x3 (`fastb-r1..r3.jsonl`), all with the current code (`phase8-part1.sh`).
+- Part 2 to start after it: lanes x3 (`run_all_lanes.sh`, move `lanes.jsonl` to `lanes-r1..r3.jsonl` after each pass).
+- Part 3: baseline x2 (`run_all_baseline.sh`, move `baseline.jsonl` to `baseline-r2`, `-r3`; run 4 is `baseline-r1.jsonl`).
+- Combine: `.venv/bin/python compare_runs.py`. Old runs kept: `fastb-run1..4.jsonl`, `lanes-old.jsonl`, `baseline-oldclock.jsonl`, `codex-smoke.jsonl`.
+- Drafts waiting for the final numbers: `README.md` (rewritten, no em dashes), `docs/video-script.md`, `LICENSE` (MIT).
+
 ## Next steps
 
 1. Commit phases 5-7 with `git commit -F .fastb/commit-msg.txt` and push, if not done.
