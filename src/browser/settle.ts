@@ -16,7 +16,12 @@ const QUIET_WINDOW = `({ quietMs, maxMs }) => new Promise((resolve) => {
       return r.width > 0 && r.height > 0;
     });
   let last = performance.now();
-  const obs = new MutationObserver(() => (last = performance.now()));
+  // fastb's own flash box (live grid) is not a page change.
+  const ours = (n) => n && n.id === "__fastb_flash";
+  const obs = new MutationObserver((records) => {
+    if (records.every((r) => ours(r.target) || [...r.addedNodes, ...r.removedNodes].some(ours))) return;
+    last = performance.now();
+  });
   obs.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
   const end = performance.now() + maxMs;
   const tick = () => {

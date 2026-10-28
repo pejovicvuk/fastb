@@ -68,55 +68,64 @@ Each phase ends with a "done when" check. Do not start the next phase before it 
 - Decision (2026-10-27): no draft-and-verify. Claude Code and Codex stay the agents; the Meta model works inside fastb (see phase 5).
 - Next (optional, before phase 7): read the 6 tasks both setups fail (fly-unified x3, opendining-3/4, topwork-1).
 
-### Phase 5 · Draft and verify (Meta model at the core)
-- [ ] Drafter: Meta open-weight model (Muse Spark Open via partner inference, or Muse Glimmer local) gets goal + page text and proposes the next chunk.
-- [ ] `fastb look` returns the draft with the page. The big agent approves, edits, or ignores it in the same turn.
-- [ ] Measure: turns saved, draft acceptance rate.
-- **Done when:** draft-and-verify runs on the 22 tasks with numbers.
+Decision (2026-10-28): **parallel lanes.** One agent turn drives many isolated browsers at once, you watch them all live, and a Meta model checks each lane. Draft-and-verify and the gas pack are dropped. Why: our data says the cost is model round trips; chunks cut them 27 -> 10 per task, lanes cut them per batch of tasks. Research on what exists: `docs/research-gaps.md`, plus the parallel search in this decision (Steel / Browserbase have cloud sessions with live view; Playwright / QA Wolf run written tests in parallel; none found where a coding agent fans out many local lanes in one turn and gets one checked answer).
 
-### Phase 6 · Gas pipeline pack
-Can start in parallel with phase 5 once phase 4 passes.
-- [ ] Learn once: Muse Spark visits a pipeline site and writes a routine (chunk) to reach its critical notices / capacity page. fastb saves it.
-- [ ] Replay at code speed. If the page changed and the routine fails, the model repairs it (self-healing).
-- [ ] 5–8 open sites: Kinder Morgan, Enbridge, TC Energy, Energy Transfer, Boardwalk (GasQuest), Williams Northwest.
-- [ ] Deadline race: normal agent vs fastb across the sites, with a cycle cutoff timer.
-- **Done when:** one command checks all sites and prints new notices.
+### Phase 5 · Parallel lanes (core) · done 2026-10-28, Codex review: 9 rounds, findings fixed
+- [x] `fastb lanes`: one input with several blocks (`lane <name>` then its steps). Each new lane gets its own isolated browser context (own cookies and storage). All lanes run at the same time.
+- [x] Answer: one short line per lane (`[b] STOP at step 3/5: click "Pay": reason`), then that lane's changes only. Lanes stay open: `fastb run --lane b`, `fastb look --lane b`, `fastb lanes look` (all pages), `fastb lanes close`.
+- [x] Engine: many contexts in one Chrome (own Chrome: a launched browser for lanes; CDP: new contexts in that Chrome). `--timezone` and `--clock` for lane contexts (tests at a fixed time).
+- [x] Unit tests: lanes parser, combined answer.
+- **Done when:** one `fastb lanes` call runs 6 REAL tasks in 6 lanes at once, and each lane passes the REAL checker where the same task passes alone. **Met 2026-10-28** (`run_lanes.py`, batch six-a): 6/6 passed, 84 s, 17 turns, $0.23. Same 6 tasks one by one: baseline 293 s, 103 turns, $1.00; fastb 104 s, 34 turns, $0.63.
+- Lessons:
+  - The agent's first move was a shell loop over the lanes; Claude Code's `Bash(fastb:*)` permission blocks loops. Added `fastb lanes look`.
 
-### Phase 7 · Proof
-- [ ] Full benchmark: 3 runs per task, both setups.
-- [ ] Ablation chart: smart waits → + chunks → + diffs → + draft-and-verify.
-- [ ] One run with Codex (`codex exec`), to show it works with both agents.
-- [ ] Claude in Chrome on 3 tasks by hand, timed, for the video.
-- [ ] MCP wrapper, only if everything above is done.
+### Phase 6 · Live grid · done 2026-10-28, Codex review: 9 rounds, findings fixed
+- [x] `fastb watch`: a local page with one live tile per lane (CDP screencast), the current step, a status color, and a short flash on each element fastb acts on. Server written by a Codex worker (`src/watch/`), wired and tested here.
+- **Done when:** 12 lanes are visible live while they run, and watching slows the runs by less than 10%. **Met 2026-10-28:** 12 lanes on 6 REAL sites shown live (screenshot check). 6-lane run, 3 times each: 8.4 / 8.1 / 8.3 s without a viewer, 8.5 / 8.3 / 8.2 s with one (about 0%). A viewer got 35 frames in 8 s from 2 lanes. Script: `.fastb/grid-overhead.sh`.
 
-### Phase 8 · Video and docs
-- [ ] Video script (3 min): pain → how it works → benchmark race → gas deadline race → numbers + Meta model role.
+### Phase 7 · Meta model checks every lane (Muse Spark 1.3 via the Meta API) · done 2026-10-28, Codex review: 9 rounds, findings fixed
+- [x] Commit check: at a gated click (send / pay / book), Muse Spark compares a checklist made from the task with what the page holds (field values, review page). A mismatch stops that lane with a short reason. (Held request bodies: not built.)
+- [x] Lane report: `fastb lanes report`. Muse Spark groups all lanes' latest results into one short answer (which passed, which failed, the shared cause).
+- **Done when:** it stops a lane with a planted wrong value, lets the correct lanes through, and the report groups planted failures by cause. **Met 2026-10-28** on REAL OpenDining, 6 lanes with a `task` line: 2 right bookings clicked; 2 wrong dates and 2 wrong party sizes stopped before the click, each with the exact value. Report (2.2 s, same in 2 runs): "2 ok; stopped (2), party size is not 4 people (2 people, 6 people); stopped (2), date is not July 20 (Jul 19, Jul 21)". Checks ~1.6 s each, run at the same time across lanes.
+- Fixed on the way: "Complete reservation" was not a gated word; the API key was looked up only in the fastb home; a failed check was silent (now a `note:` line); a nameless field showed its value as its name (`textbox "+1"` is now `textbox = "+1"`); the report first made one group per lane (prompt now groups by the kind of problem).
+- What goes to the Meta API: only when a person writes `on` to `~/.fastb/remote-check` (off by default; no fastb command writes it, and an agent limited to `Bash(fastb:*)` cannot). Then: the task text, the gated button's label, visible field values and up to 4,000 characters of visible text, with private values hidden first (fields labelled card / CVV / account / IBAN / password and similar; 6+ digit numbers and emails the task does not name; the URL query). Dates stay. Never password fields. Report: built only from each lane's structured outcome (OK / STOP, the step's kind and target, the reason), never from page text. The bench harnesses write it before a run and remove it after (REAL data is fake).
+- Codex review, 9 rounds (2026-10-28): every finding fixed with a test. Stopped after round 9 by plan (A): the feature is off by default, only a person turns it on, and the bench data is fake. **Known limits** (for the README): (1) with the check on, visible page text is sent to the Meta API; hiding is by pattern (secret labels, card-like and long numbers, emails, tokens, URL queries, values after CVV / PIN / password / token words, values typed into secret fields), so private values without such a shape (names, addresses) can still be sent; (2) a few ms remain between the second page read and the click, and the real request is not held for checking; (3) long numbers are hidden, so the check cannot compare phone or account numbers.
+- Codex review rounds 2 and 3 (2026-10-28) found more leak paths (lane report, URL path, button label, secrets repeated in page text) and second-read gaps (nameless fields, URL, page text, a failed second read). All fixed, with tests of the whole outgoing text and of the check flow with failing reads (`runCommitCheck`).
+- Codex review (2026-10-28) found 4 issues, all fixed with tests: private data reached the Meta API (now opt-in + redaction); the watch stream had no access control (now a secret path, Host and Origin must be this server, typed values hidden in step text); a page change during the check was not seen (fields are read again after the verdict; a change stops the click; a few ms remain before the click, and held requests are not built); lanes starting together launched one browser each (now one shared launch).
+
+### Phase 8 · Proof
+- [x] Rerun baseline and fastb with the browser at US Pacific time, July 18, 2024 (the REAL v1 task era). Done 2026-10-28 (run 4): success 17/22 both, median 74 s -> 36 s (2.07x), turns 30 -> 10, cost -40%.
+- [x] Parallel benchmark: K REAL tasks in one agent prompt. Claude Code + fastb lanes vs baseline doing them one by one. Metrics: total wall time, success, turns, cost. Done 2026-10-28: all 22 tasks in 3 batches: 18/22, 693 s, 138 turns, $2.52 vs baseline 17/22, 2301 s, 632 turns, $5.77 (3.3x faster). One run per batch.
+- [ ] 3 runs per task, both setups. One run with Codex (`codex exec`).
+- [ ] Race on one task, timed, for the video: Codex's own browser (screenshots and a moving cursor) vs Codex + fastb; Claude in Chrome by hand.
+
+### Phase 9 · Video and docs
+- [ ] Video script (3 min): the slow cursor -> one turn, many browsers, live grid -> the Meta model catches a wrong lane -> numbers.
 - [ ] Record and edit. Show only work built during the event.
 - [ ] README: install, commands, benchmark numbers, how the Meta model is used.
 
-### Phase 9 · Ship
+### Phase 10 · Ship
 - [x] Participant guide moved out of the repo (`~/.fastb/private/`), removed from history 2026-10-27.
 - [ ] Open the public repo logged out.
 - [ ] Submit on the CV platform, well before the deadline.
 - [ ] Post the demo on X (Most Viral prize, deadline Nov 8, 23:59 ET).
 
-**Start phases 8 and 9 early enough to finish them calmly, whatever state the earlier phases are in.**
+**Start phases 9 and 10 early enough to finish them calmly, whatever state the earlier phases are in.**
 
 ## If we fall behind (cut in this order)
 
 1. MCP wrapper.
-2. Codex run.
-3. Self-healing in the gas pack (keep replay only).
-4. Gas pack down to 3 sites.
-5. Draft-and-verify (fall back to chunks + diffs only; then the Meta model drafts routines in the gas pack, so it stays at the core).
+2. Claude in Chrome race.
+3. 3 runs per task (keep 2).
+4. Lane report (keep the commit check).
+5. Element flash in the live grid.
 
-Never cut: the benchmark numbers and the video.
+Never cut: lanes, the live grid, the Meta model check, the benchmark numbers, the video.
 
 ## Meta model use (must be real, not decoration)
 
-- Draft-and-verify drafter: Meta open-weight model (open-weights prize).
-- Gas pack: Muse Spark learns and repairs routines and reads notices.
-- Optional: Muse Spark as the big planner in one benchmark run, to show a full Meta pipeline.
+- Muse Spark 1.3 (Meta API, credits): commit check on every lane, and the lane report.
+- Optional: Muse Glimmer (open weights, local) runs the same check, if a first test shows it is fast enough on the Mac. That would fit the open-weights prize.
 
 ## Open questions
 

@@ -11,6 +11,10 @@ export interface StatRow {
   steps?: number; // run: steps in the chunk
   done?: number; // run: steps that passed
   full?: number; // run: characters the full page would have been (when only changes were sent)
+  lanes?: number; // lanes: how many ran at once
+  checks?: number; // commit checks by the Meta model
+  check_ms?: number;
+  check_stops?: number; // checks that stopped a click
 }
 
 export function appendStat(row: StatRow): void {

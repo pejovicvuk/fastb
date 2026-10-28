@@ -8,6 +8,8 @@
 //   wait for text "Saved"
 //   expect url /dashboard
 //   allow            (lets this chunk click delete / pay / send controls)
+//   allow unchecked  (the same, and skips the Meta model's commit check)
+//   task Book a table for 4 on July 20 at 7 PM   (what the commit check compares the page with)
 // Blank lines and lines starting with # are ignored.
 
 export type Target =
@@ -24,7 +26,8 @@ export type Step =
   | { op: "expect text" | "expect no text"; text: string }
   | { op: "expect url"; text: string }
   | { op: "expect value"; target: Target; value: string }
-  | { op: "allow" };
+  | { op: "allow"; unchecked?: boolean }
+  | { op: "task"; text: string };
 
 export interface ParsedStep {
   line: number; // 1-based line in the chunk
@@ -162,8 +165,11 @@ export function parseStep(source: string, line: number): Step {
       return { op, text: valueOf(e[2].trim()) };
     }
     case "allow":
-      if (rest) throw new ParseError(line, "allow takes nothing after it");
-      return { op: "allow" };
+      if (rest && rest.toLowerCase() !== "unchecked") throw new ParseError(line, 'allow takes nothing after it, or "unchecked"');
+      return rest ? { op: "allow", unchecked: true } : { op: "allow" };
+    case "task":
+      need("the task text");
+      return { op: "task", text: valueOf(rest) };
     default:
       throw new ParseError(line, `unknown step "${verb}"`);
   }

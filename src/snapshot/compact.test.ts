@@ -205,3 +205,11 @@ test("a card with one named image stays one line", () => {
 `);
   assert.deepEqual(out, ['@e1 "Little Caesars"']);
 });
+
+test("a nameless field shows its text as a value, not as a name", () => {
+  const out = run(`
+- textbox [ref=e77]: "+1"
+- combobox [ref=e83]
+`);
+  assert.deepEqual(out, ['@e77 textbox = "+1"', "@e83 combobox"]);
+});

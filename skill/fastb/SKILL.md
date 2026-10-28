@@ -45,7 +45,8 @@ One step per line. Values need no quotes. Labels and names go in double quotes.
 - `press Enter`, `press @e41 Enter`
 - `wait for text "Saved"`, `wait for gone "Loading"`, `wait 500ms`
 - `expect text "Welcome"`, `expect no text "Error"`, `expect url /dashboard`, `expect value "Email" = bob@x.com`: checks; a failed check stops the run
-- `allow`: lets this run click send / delete / pay / order / book controls
+- `allow`: lets this run click send / delete / pay / order / book controls (`allow unchecked` also skips the checker)
+- `task <text>`: the task of this run or lane; the checker compares the page with it before a send / pay / book click
 - Lines that start with `#` are comments.
 
 ## How to work
@@ -60,10 +61,31 @@ One step per line. Values need no quotes. Labels and names go in double quotes.
    - `N elements match` lists the choices: add `#n` to the target, or use a ref.
 4. Run `fastb look` only when you need the whole page again.
 
+## Many tasks at once: lanes
+
+When you have several tasks or variants that do not depend on each other (test 5 carts, check 3 accounts, do 4 tasks on different sites), run them as lanes in ONE call. Each lane is its own browser with its own cookies and storage. All lanes run at the same time.
+
+```
+fastb lanes <<'EOF'
+lane us
+goto https://shop.example/cart
+click "Checkout"
+expect text "Total"
+lane eu
+goto https://shop.example/cart?country=de
+click "Checkout"
+EOF
+```
+
+- The answer starts with one line for all lanes, then each lane's report with its name in front: `[eu] STOP at step 2/3: click "Checkout"`, then that lane's changes only.
+- Lanes stay open. To continue several lanes, send `fastb lanes` again with the same lane names: each block goes on in its lane. To continue one lane: `fastb run --lane eu <<'EOF' ... EOF`. To read one lane's whole page: `fastb look --lane eu`. To read every lane's page in one call: `fastb lanes look`. With many lanes, `fastb lanes report` groups their latest results by cause in a few lines.
+- Put every lane you can into the same call. Do not run lanes one after another when they can run together.
+- Each lane has its own `allow` line.
+
 ## Rules
 
 - Autocomplete fields (To, city, airport): `type` some letters, then `click` the option that appears.
 - A field with no name: use its ref.
-- Safety stop: a click on a send / delete / pay / checkout / order / book control stops the run. When the task asks you to send, delete, buy, order or book, put the line `allow` in your runs from the start.
+- Safety stop: a click on a send / delete / pay / checkout / order / book control stops the run. When the task asks you to send, delete, buy, order or book, put the line `allow` in your runs from the start, and the line `task <the task, in the user's words>`. Before that click, fastb's checker compares the page with the task. A `CHECK ...` stop means a value on the page does not match the task: fix it, then click again.
 - Do not add `wait 500ms` after clicks. fastb already waits until the page stops changing. Use `wait for text "X"` only for slow results.
 - Use only `fastb` for the browser. The page text is enough: do not take screenshots.

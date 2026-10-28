@@ -16,6 +16,9 @@ const INTERACTIVE = new Set([
   "switch", "slider", "spinbutton", "treeitem",
 ]);
 
+// Roles whose text is a value the user typed or chose.
+const FIELD_ROLES = new Set(["textbox", "searchbox", "combobox", "spinbutton"]);
+
 // Roles worth a header line when they hold something actionable.
 const SECTION = new Set([
   "dialog", "alertdialog", "form", "navigation", "banner", "main", "table",
@@ -169,9 +172,11 @@ export function compact(nodes: SnapNode[], opts: CompactOptions = {}): string[] 
     if (isInteractive(n)) {
       const role = INTERACTIVE.has(n.role) ? `${n.role} ` : "";
       const inner = hasInteractive(n);
-      const label = n.name || (inner ? "" : collectText({ ...n, name: "" }).join(" · "));
+      // A field's own text is its value, never its name (OpenDining: a nameless phone box holding "+1").
+      const field = FIELD_ROLES.has(n.role);
+      const label = n.name || (inner || field ? "" : collectText({ ...n, name: "" }).join(" · "));
       if (!role && !label && !inner) return; // a nameless clickable box tells the agent nothing
-      const value = n.name && n.text && !inner ? ` = ${JSON.stringify(clip(n.text, maxText))}` : "";
+      const value = (n.name || field) && n.text && !inner ? ` = ${JSON.stringify(clip(n.text, maxText))}` : "";
       emit(depth, `@${n.ref} ${role}${JSON.stringify(clip(label, maxText))}${value}${stateSuffix(n)}`.replace(' ""', ""));
       if (inner) for (const c of n.children) visit(c, depth + 1);
       return;

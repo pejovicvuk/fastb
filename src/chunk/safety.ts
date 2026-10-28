@@ -8,6 +8,7 @@ const RISKY = new RegExp(
       "delete", "remove", "erase", "discard", "destroy", "trash",
       "pay", "purchase", "buy", "checkout", "check out", "place order", "order now",
       "submit order", "submit payment", "confirm (?:order|purchase|payment|booking|reservation)",
+      "complete (?:order|purchase|payment|booking|reservation)",
       "book", "reserve", "send", "post", "publish", "transfer", "withdraw",
       "unsubscribe", "deactivate", "close account",
       "cancel (?:order|subscription|account|booking|reservation|ride)",

@@ -12,18 +12,19 @@ You are the orchestrator for **fastb**, my solo entry in the Meta Global AI Deve
 
 A fast browser-execution engine for AI coding agents (Claude Code, Codex). The agent sends **chunks** (many steps + expected results) to a background engine; the engine runs them at code speed and stops at the first surprise. Goal: cut model turns, which are 83% of browser-agent time in our baseline. Later phases: changes-only feedback, draft-and-verify with a Meta open-weight model, and a gas pipeline (EBB) pack as the real-world showcase.
 
-## State now
+## State now (2026-10-28, paused)
 
-- Repo: `~/Developer/fastb`. GitHub: `pejovicvuk/fastb`, **public**.
-- **Phases 1–4 are done** (see `docs/plan.md`). Phases 1–3 passed Codex review and are pushed.
-- Phase 4 checkpoint met just: Claude Code + fastb on 22 REAL tasks, median 62 s -> 41 s (1.51x), success 13/22 -> 16/22, turns 27 -> 12, cost $5.61 -> $3.91 (`docs/bench-2026-10-27.md`). One run per task.
-- Bench: `~/Desktop/fastb-bench/run_fastb.py <task>`, `run_all_fastb.sh` (22 tasks), `compare.py [file]`.
+- Direction: **parallel lanes** (docs/plan.md, decision 2026-10-28). Phases 1-4 done and pushed. Phases 5 (lanes), 6 (live grid) and 7 (Meta model commit check + lane report) built and meet their "done when"; **not committed yet**. Commit message ready: `.fastb/commit-msg.txt`.
+- Results (docs/bench-2026-10-27.md): run 4, browser at US Pacific time / July 2024: fastb 2.07x faster than baseline per task (74 s -> 36 s), success 17/22 both. Lanes, all 22 tasks in 3 prompts: 18/22, 693 s vs baseline 2301 s (3.3x), 138 vs 632 turns, $2.52 vs $5.77.
+- 92 tests pass. Build is current (`dist/`).
+- Codex review of phases 5-7: 9 rounds, all findings fixed; stopped by plan (A). Known limits in docs/plan.md (phase 7).
+- Remote check switch: a person writes `on` to `~/.fastb/remote-check` (removed now). Bench harnesses write it before a run and remove it after.
 
 ## Next steps
 
-1. If not done: commit the phase 4 work with `git commit -F .fastb/commit-msg.txt` and push.
-2. Optional: read the 6 tasks both setups fail (fly-unified x3, opendining-3/4, topwork-1).
-3. **Phase 5** (draft and verify with a Meta model) needs `META_API_KEY` in `~/.fastb/secrets.env` and a model choice. Phase 8–9 (video, README, submit) should start early enough.
+1. Commit phases 5-7 with `git commit -F .fastb/commit-msg.txt` and push, if not done.
+2. Phase 8 (proof): 3 runs per task / batch (baseline, fastb, lanes), Codex + fastb on 22 tasks (`run_codex.py`, smoke test gomail-2 passed: 22.5 s, 5 commands), the race vs Codex's own browser for the video.
+3. Phase 9-10: video, README, submit (deadline Thu Nov 5, 03:00 Belgrade).
 
 ## Handy tools (gitignored, in `.fastb/`)
 

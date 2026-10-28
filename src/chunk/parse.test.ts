@@ -73,7 +73,13 @@ test("reports bad lines with their number", () => {
   assert.throws(() => parseChunk('fill "Email"'), /fill needs/);
 });
 
-test("allow is a step with nothing after it", () => {
+test("allow is a step with nothing after it, or unchecked", () => {
   assert.deepEqual(parseStep("allow", 1), { op: "allow" });
+  assert.deepEqual(parseStep("allow unchecked", 1), { op: "allow", unchecked: true });
   assert.throws(() => parseStep("allow send", 1), /allow takes nothing/);
+});
+
+test("task keeps the whole text", () => {
+  assert.deepEqual(parseStep('task Book "The Royal Dine" for 4 = July 20', 1), { op: "task", text: 'Book "The Royal Dine" for 4 = July 20' });
+  assert.throws(() => parseStep("task", 1), /task needs/);
 });

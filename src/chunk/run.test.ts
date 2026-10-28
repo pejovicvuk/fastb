@@ -111,3 +111,54 @@ test("fill works on plaintext-only and inherited editable elements", async (t) =
   const r = await run(`fill "Plain" = hello\nfill "Inner" = world\nexpect text "hello"\nexpect text "world"`);
   assert.equal(r.ok, true, r.failure?.reason);
 });
+
+test("commit check stops an allowed risky click on a mismatch; allow unchecked skips it", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  await page.setContent(`<input aria-label="Date" value="2024-07-19"><button onclick="document.title='booked'">Book</button>`);
+  const asked: string[] = [];
+  const check = async (_p: unknown, label: string) => {
+    asked.push(label);
+    return { reason: 'date is "2024-07-19", task wants "2024-07-20"', model: true };
+  };
+  let r = await runChunk(async () => page, parseChunk('allow\nclick "Book"'), { check });
+  assert.match(r.failure?.reason ?? "", /^CHECK before "Book" \(not clicked\): date is "2024-07-19"/);
+  assert.equal(await page.title(), "");
+  assert.deepEqual(asked, ["Book"]);
+
+  r = await runChunk(async () => page, parseChunk('allow unchecked\nclick "Book"'), { check });
+  assert.equal(r.ok, true, r.failure?.reason);
+  assert.equal(await page.title(), "booked");
+  assert.equal(asked.length, 1); // not asked again
+});
+
+test("a failed expect value on a password field never prints the value", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  await page.setContent(`<input type="password" aria-label="Password" value="actualPassword7">`);
+  const r = await runChunk(async () => page, parseChunk('expect value "Password" = other'));
+  assert.equal(r.ok, false);
+  assert.equal(r.failure!.reason.includes("actualPassword7"), false, r.failure!.reason);
+});
+
+test("failures carry a fixed code; page text stays in the local reason only", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  await page.setContent(`<div style="position:fixed;inset:0;background:#fff">API secret: smallSecret</div><button>Go</button>`);
+  let r = await run('click "Go"');
+  assert.equal(r.failure?.code, "covered");
+  r = await run('expect text "Recovery phrase: amber birch cedar"');
+  assert.equal(r.failure?.code, "text-missing");
+  r = await run('click "Nothing here"');
+  assert.equal(r.failure?.code, "not-found");
+});
+
+test("a page-change stop is a fixed code, not free text; secret fields report typed values", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  await page.setContent(`<input type="password" aria-label="Password"><input aria-label="Card number"><input aria-label="City"><button>Pay</button>`);
+  const secrets: string[] = [];
+  const r = await runChunk(async () => page, parseChunk('allow\nfill "Password" = hunter22\nfill "Card number" = 4242424242424242\nfill "City" = Belgrade\nclick "Pay"'), {
+    check: async () => ({ reason: "the page changed during the check (API secret smallSecret); run the step again", model: false }),
+    onSecret: (v) => secrets.push(v),
+  });
+  assert.equal(r.failure?.code, "check-blocked");
+  assert.equal(r.failure?.checkReason, undefined);
+  assert.deepEqual(secrets, ["hunter22", "4242424242424242"]);
+});

@@ -23,6 +23,21 @@ const USAGE = `fastb: fast browser for AI agents
                           after a run: only what changed on the page (--no-look: only the page title)
                           clicks on delete / pay / send / order controls stop the run;
                           add the line "allow" to the chunk when the task needs them
+  fastb lanes <<'EOF'     run several chunks at once, each in its own isolated browser
+    lane us
+    goto shop.example/cart
+    click "Checkout"
+    lane eu
+    goto shop.example/cart?country=de
+  EOF
+                          answer: one line per lane, then each lane's changes
+  fastb run --lane eu ... / fastb look --lane eu    continue or read one lane
+  fastb lanes look        every lane's page in one call
+  fastb lanes report      the Meta model groups all lanes' latest results by cause (a few lines)
+  fastb lanes close       close all lanes
+                          new lanes: --timezone America/Los_Angeles, --clock 2024-07-18T09:00:00-07:00
+  fastb watch             open the live grid: every lane (and the main page) as a live picture
+  fastb watch stop        stop it
   fastb stats             commands, steps and characters saved so far
   fastb status            show engine and browser state
   fastb stop              close the browser and stop the engine
@@ -45,7 +60,7 @@ function parse(argv: string[]): Request | null {
       continue;
     }
     const [key, inline] = a.slice(2).split("=", 2);
-    const takesValue = key === "cdp" || key === "file";
+    const takesValue = ["cdp", "file", "lane", "timezone", "clock", "port"].includes(key);
     const value = inline ?? (takesValue ? argv[++i] : true);
     if (OPTION_FLAGS.has(key)) {
       if (key === "cdp") options.cdp = String(value);
@@ -57,6 +72,8 @@ function parse(argv: string[]): Request | null {
   if (!cmd || cmd === "help" || flags.help) return null;
   if (!options.cdp && process.env.FASTB_CDP) options.cdp = process.env.FASTB_CDP;
   if (options.headless === undefined && process.env.FASTB_HEADLESS === "1") options.headless = true;
+  if (flags.timezone === undefined && process.env.FASTB_TIMEZONE) flags.timezone = process.env.FASTB_TIMEZONE;
+  if (flags.clock === undefined && process.env.FASTB_CLOCK) flags.clock = process.env.FASTB_CLOCK;
   return { cmd, args, flags, options };
 }
 
@@ -123,10 +140,13 @@ if (req.cmd === "stats") {
   console.log(summarize(readStats()));
   process.exit(0);
 }
-if (req.cmd === "run") readChunk(req);
+if (req.cmd === "run" || req.cmd === "lanes") readChunk(req);
 sendStartingEngine(req).then(
   (res) => {
     console.log(res.text);
+    // Open the grid for a person; agents and scripts pass --no-open.
+    const url = req.cmd === "watch" && /^watch: (http\S+)/.exec(res.text)?.[1];
+    if (url && !req.flags["no-open"] && process.platform === "darwin") spawn("open", [url], { stdio: "ignore", detached: true }).unref();
     process.exit(res.ok ? 0 : 1);
   },
   (err: Error) => {

@@ -9,6 +9,7 @@ test("finds risky actions", () => {
   assert.equal(riskyWord("Confirm booking"), "confirm booking");
   assert.equal(riskyWord("Cancel subscription"), "cancel subscription");
   assert.equal(riskyWord("Buy now"), "buy");
+  assert.equal(riskyWord("Complete reservation"), "complete reservation");
 });
 
 test("ignores safe controls and longer words", () => {

@@ -13,16 +13,17 @@ export interface View {
   full?: number; // chars of the full page, when only changes were sent
 }
 
-// The page as the agent last saw it: the base for "only what changed".
-let seen: { page: Page; lines: string[] } | undefined;
+// Each page as the agent last saw it: the base for "only what changed".
+// One entry per page, so every lane and tab keeps its own base.
+const seen = new WeakMap<Page, string[]>();
 
-export function forgetView(): void {
-  seen = undefined;
+export function forgetView(page: Page): void {
+  seen.delete(page);
 }
 
 export async function showPage(page: Page): Promise<string> {
   const lines = await pageLines(page);
-  seen = { page, lines };
+  seen.set(page, lines);
   return `${await pageHeader(page)}\n${lines.join("\n")}`;
 }
 
@@ -31,8 +32,8 @@ export async function showPage(page: Page): Promise<string> {
 export async function showChanges(page: Page): Promise<View> {
   const header = await pageHeader(page);
   const lines = await pageLines(page);
-  const before = seen?.page === page ? seen.lines : undefined;
-  seen = { page, lines };
+  const before = seen.get(page);
+  seen.set(page, lines);
   const fullText = `${header}\n${lines.join("\n")}`;
   if (!before) return { text: fullText };
   const d = diffPage(before, lines);
@@ -61,7 +62,6 @@ export async function runReport(result: RunResult, view: () => Promise<View>): P
   try {
     page = await view();
   } catch (err) {
-    seen = undefined;
     page = { text: `page: could not read it (${(err instanceof Error ? err.message : String(err)).split("\n")[0]}). Run fastb look.` };
   }
   lines.push(page.text);

@@ -11,10 +11,20 @@ const TYPE_DELAY_MS = 15;
 const EXPECT_MS = 5000;
 const WAIT_FOR_MS = 10000;
 
+// Why a step failed, as a fixed code. Remote reports (lane report) send only this, never
+// the reason text, which may hold page text or values. `checkReason` is the commit
+// check's own mismatch, made from already-redacted evidence.
+export type FailCode =
+  | "not-found" | "ref-gone" | "many-matches" | "no-target" | "covered" | "disabled" | "not-visible" | "timeout"
+  | "not-text-field" | "option-missing" | "text-missing" | "text-present" | "still-visible" | "url-mismatch"
+  | "value-differs" | "safety-stop" | "check-mismatch" | "check-blocked" | "error";
+
 export interface StepFailure {
   index: number; // 0-based
   source: string;
-  reason: string;
+  reason: string; // full text, for the agent on this machine only
+  code: FailCode;
+  checkReason?: string;
   choices?: string[];
 }
 
@@ -29,19 +39,48 @@ export interface RunResult {
 class StepError extends Error {
   constructor(
     message: string,
+    readonly code: FailCode = "error",
     readonly choices?: string[],
+    readonly checkReason?: string,
   ) {
     super(message);
   }
 }
 
+export interface RunHooks {
+  onStep?: (index: number, source: string) => void; // called before each step (the live grid shows it)
+  // Commit check before an allowed send / pay / book click: a mismatch reason, or null to go on.
+  // `model: true` only for a mismatch found by the Meta model (made from redacted evidence);
+  // page changes and failed reads are `model: false` and never leave as free text.
+  check?: (page: Page, label: string) => Promise<{ reason: string; model: boolean } | null>;
+  // A value typed into a secret field (password, card, CVV...): kept locally, so it is
+  // hidden from every later request even when the field is gone.
+  onSecret?: (value: string) => void;
+  flash?: boolean; // show a short box on each element fastb acts on (only while the live grid is watched)
+}
+
+// A box over the element for 0.6 s, in its own layer (id __fastb_flash, ignored by settle).
+const FLASH = `(el) => {
+  const r = el.getBoundingClientRect();
+  const d = el.ownerDocument;
+  let box = d.getElementById("__fastb_flash");
+  if (!box) { box = d.createElement("div"); box.id = "__fastb_flash"; d.documentElement.appendChild(box); }
+  box.style.cssText = "position:fixed;pointer-events:none;z-index:2147483647;border:3px solid #ff7a00;border-radius:4px;" +
+    "box-shadow:0 0 12px #ff7a00;left:" + (r.left - 4) + "px;top:" + (r.top - 4) + "px;width:" + (r.width + 2) + "px;height:" + (r.height + 2) + "px";
+  clearTimeout(box.__t);
+  box.__t = setTimeout(() => box.remove(), 600);
+}`;
+const flashBox = new Function("el", `return (${FLASH})(el);`) as (el: Element) => void;
+
 // `currentPage` is asked before every step: a click may open a new tab.
-export async function runChunk(currentPage: () => Promise<Page>, steps: ParsedStep[]): Promise<RunResult> {
+export async function runChunk(currentPage: () => Promise<Page>, steps: ParsedStep[], hooks: RunHooks = {}): Promise<RunResult> {
   const started = Date.now();
-  const allow = steps.some((s) => s.step.op === "allow");
+  const allowStep = steps.find((s) => s.step.op === "allow")?.step as { unchecked?: boolean } | undefined;
+  const policy: Policy = { allow: Boolean(allowStep), check: allowStep?.unchecked ? undefined : hooks.check, flash: hooks.flash, onSecret: hooks.onSecret };
   for (let i = 0; i < steps.length; i++) {
+    hooks.onStep?.(i, steps[i].source);
     try {
-      await runStep(await currentPage(), steps[i].step, allow);
+      await runStep(await currentPage(), steps[i].step, policy);
     } catch (err) {
       const e = err as Error;
       return {
@@ -49,74 +88,96 @@ export async function runChunk(currentPage: () => Promise<Page>, steps: ParsedSt
         done: i,
         total: steps.length,
         ms: Date.now() - started,
-        failure: { index: i, source: steps[i].source, reason: shortReason(e), choices: (e as StepError).choices },
+        failure: {
+          index: i,
+          source: steps[i].source,
+          reason: shortReason(e),
+          code: failCode(e, steps[i].step),
+          checkReason: e instanceof StepError ? e.checkReason : undefined,
+          choices: e instanceof StepError ? e.choices : undefined,
+        },
       };
     }
   }
   return { ok: true, done: steps.length, total: steps.length, ms: Date.now() - started };
 }
 
-async function find(page: Page, step: Extract<Step, { target?: unknown }>, purpose: Purpose): Promise<Locator> {
-  if (!("target" in step) || !step.target) throw new StepError("no target");
+async function find(page: Page, step: Extract<Step, { target?: unknown }>, purpose: Purpose, policy?: Policy): Promise<Locator> {
+  if (!("target" in step) || !step.target) throw new StepError("no target", "no-target");
   const r = await resolveTarget(page, step.target, purpose, FIND_MS);
-  if (!r.ok) throw new StepError(r.reason, r.choices);
+  if (!r.ok) throw new StepError(r.reason, r.choices ? "many-matches" : /^ref @/.test(r.reason) ? "ref-gone" : "not-found", r.choices);
+  if (policy?.flash) await r.locator.evaluate(flashBox).catch(() => {});
   return r.locator;
 }
 
 // After a step that may change the page, wait briefly for it to settle.
 const afterAction = (page: Page) => settle(page, { quietMs: 200, maxMs: 3000 });
 
-async function runStep(page: Page, step: Step, allow: boolean): Promise<void> {
+// What a gated click needs: an "allow" line, and then the commit check (unless "allow unchecked").
+interface Policy {
+  allow: boolean;
+  check?: RunHooks["check"];
+  flash?: boolean;
+  onSecret?: RunHooks["onSecret"];
+}
+
+async function runStep(page: Page, step: Step, policy: Policy): Promise<void> {
   switch (step.op) {
     case "allow":
+    case "task":
       return;
     case "goto":
       await page.goto(withScheme(step.url), { waitUntil: "domcontentloaded", timeout: 30000 });
       await settle(page);
       return;
     case "click": {
-      const loc = await find(page, step, "click");
-      if (!allow) await gate(loc, step.target);
+      const loc = await find(page, step, "click", policy);
+      await gate(page, loc, step.target, policy);
       await loc.click({ timeout: ACTION_MS }).catch(async (err: Error) => {
         if (!/intercepts pointer events/.test(err.message)) throw err;
-        throw new StepError(`another element covers it${await coverText(loc)} (close it, or use press @ref Enter)`);
+        throw new StepError(`another element covers it${await coverText(loc)} (close it, or use press @ref Enter)`, "covered");
       });
       await afterAction(page);
       return;
     }
     case "hover":
-      await (await find(page, step, "click")).hover({ timeout: ACTION_MS });
+      await (await find(page, step, "click", policy)).hover({ timeout: ACTION_MS });
       await afterAction(page);
       return;
     case "check":
     case "uncheck": {
-      const loc = await find(page, step, "check");
+      const loc = await find(page, step, "check", policy);
       await (step.op === "check" ? loc.check({ timeout: ACTION_MS }) : loc.uncheck({ timeout: ACTION_MS }));
       await afterAction(page);
       return;
     }
     case "fill": {
-      const loc = await find(page, step, "input");
+      const loc = await find(page, step, "input", policy);
       // Only real text fields can be filled; a <select> is chosen instead.
       const kind = await loc
         .evaluate((el) => (el.tagName === "SELECT" ? "select" : el.matches("input, textarea") || (el as HTMLElement).isContentEditable ? "text" : el.tagName.toLowerCase()))
         .catch(() => "text");
       if (kind === "select") await select(page, loc, step.value);
-      else if (kind !== "text") throw new StepError(`it is a ${kind}, not a text field: click it, or use type`);
-      else await loc.fill(step.value, { timeout: ACTION_MS });
+      else if (kind !== "text") throw new StepError(`it is a ${kind}, not a text field: click it, or use type`, "not-text-field");
+      else {
+        await noteSecret(loc, step.value, policy);
+        await loc.fill(step.value, { timeout: ACTION_MS });
+      }
       return;
     }
     case "type":
       // Typing takes 15 ms per key: the limit grows with the text.
-      await (await find(page, step, "input")).pressSequentially(step.value, { delay: TYPE_DELAY_MS, timeout: ACTION_MS + step.value.length * TYPE_DELAY_MS * 2 });
+      const typed = await find(page, step, "input", policy);
+      await noteSecret(typed, step.value, policy);
+      await typed.pressSequentially(step.value, { delay: TYPE_DELAY_MS, timeout: ACTION_MS + step.value.length * TYPE_DELAY_MS * 2 });
       await afterAction(page);
       return;
     case "select":
-      await select(page, await find(page, step, "select"), step.value);
+      await select(page, await find(page, step, "select", policy), step.value);
       await afterAction(page);
       return;
     case "press":
-      if (step.target) await (await find(page, step, "input")).press(step.key, { timeout: ACTION_MS });
+      if (step.target) await (await find(page, step, "input", policy)).press(step.key, { timeout: ACTION_MS });
       else await page.keyboard.press(step.key);
       await afterAction(page);
       return;
@@ -127,29 +188,32 @@ async function runStep(page: Page, step: Step, allow: boolean): Promise<void> {
       await visibleText(page, step.text).first().waitFor({ state: "visible", timeout: WAIT_FOR_MS });
       return;
     case "wait for gone":
-      await until(async () => (await visibleText(page, step.text).count()) === 0, WAIT_FOR_MS, `"${step.text}" still visible`);
+      await until(async () => (await visibleText(page, step.text).count()) === 0, WAIT_FOR_MS, `"${step.text}" still visible`, "still-visible");
       return;
     case "expect text":
       await visibleText(page, step.text)
         .first()
         .waitFor({ state: "visible", timeout: EXPECT_MS })
         .catch(() => {
-          throw new StepError(`text "${step.text}" not on the page`);
+          throw new StepError(`text "${step.text}" not on the page`, "text-missing");
         });
       return;
     case "expect no text":
-      await until(async () => (await visibleText(page, step.text).count()) === 0, 2000, `text "${step.text}" is on the page`);
+      await until(async () => (await visibleText(page, step.text).count()) === 0, 2000, `text "${step.text}" is on the page`, "text-present");
       return;
     case "expect url":
-      await until(async () => page.url().includes(step.text), EXPECT_MS, `url is ${page.url()}`);
+      await until(async () => page.url().includes(step.text), EXPECT_MS, `url is ${page.url()}`, "url-mismatch");
       return;
     case "expect value": {
-      const loc = await find(page, step, "input");
+      const loc = await find(page, step, "input", policy);
+      // A password field's value is never printed, not even in a failed check.
+      const secret = await loc.evaluate((el) => (el as HTMLInputElement).type === "password").catch(() => false);
       let seen = "";
       await until(
         async () => (seen = await loc.inputValue({ timeout: 1000 }).catch(() => "")) === step.value,
         EXPECT_MS,
-        () => `value is "${seen}"`,
+        () => (secret ? "the password field holds a different value" : `value is "${seen}"`),
+        "value-differs",
       );
       return;
     }
@@ -177,14 +241,45 @@ const CONTROL_LABEL = `(el) => {
 const controlLabel = new Function("el", `return (${CONTROL_LABEL})(el);`) as (el: Element) => unknown;
 
 // Stops a click on a delete / pay / send control unless the chunk says "allow".
-async function gate(loc: Locator, target: Target): Promise<void> {
+// With "allow", the commit check (if any) compares the page with the task first.
+async function gate(page: Page, loc: Locator, target: Target, policy: Policy): Promise<void> {
   const own = await loc.evaluate(controlLabel).catch(() => null);
   // Fail closed: a control we cannot read may be the one the gate exists for.
-  if (!Array.isArray(own)) throw new StepError("safety stop: could not read this control's label. Add the line allow to the chunk if the task needs it");
+  if (!Array.isArray(own)) {
+    if (policy.allow) return; // allowed: as before, an unreadable label does not stop the click
+    throw new StepError("safety stop: could not read this control's label. Add the line allow to the chunk if the task needs it", "safety-stop");
+  }
   const parts = [target.kind === "text" ? target.text : "", ...own].map((p) => String(p ?? "").replace(/\s+/g, " ").trim()).filter(Boolean);
   const label = [...new Set(parts)].join(" | ");
   const word = riskyWord(label);
-  if (word) throw new StepError(`safety stop: "${label.slice(0, 60)}" looks like a ${word} action. Add the line allow to the chunk if the task needs it`);
+  if (!word) return;
+  if (!policy.allow) throw new StepError(`safety stop: "${label.slice(0, 60)}" looks like a ${word} action. Add the line allow to the chunk if the task needs it`, "safety-stop");
+  if (!policy.check) return;
+  const stop = await policy.check(page, label.slice(0, 60));
+  if (stop) {
+    throw new StepError(
+      `CHECK before "${label.slice(0, 40)}" (not clicked): ${stop.reason}. Fix it, or add "allow unchecked"`,
+      stop.model ? "check-mismatch" : "check-blocked",
+      undefined,
+      stop.model ? stop.reason : undefined,
+    );
+  }
+}
+
+// Words that mark a field whose value must never leave the machine (same list as the check).
+const SECRET_FIELD = /card|cvv|cvc|cvn|security code|expir|iban|account|routing|ssn|social security|passport|tax id|pin\b|password|passcode|token|secret/i;
+
+async function noteSecret(loc: Locator, value: string, policy: Policy): Promise<void> {
+  if (!policy.onSecret || !value) return;
+  const secret = await loc
+    .evaluate((node) => {
+      const el = node as HTMLInputElement;
+      if (el.type === "password") return "password";
+      const labels = Array.from(el.labels ?? []).map((l) => l.textContent || "");
+      return [el.getAttribute("aria-label"), el.getAttribute("name"), el.id, el.getAttribute("placeholder"), el.getAttribute("autocomplete"), ...labels].filter(Boolean).join(" ");
+    })
+    .catch(() => "");
+  if (secret === "password" || SECRET_FIELD.test(secret)) policy.onSecret(value);
 }
 
 // What lies on top of the element's center, as text the agent can match to the page.
@@ -214,7 +309,7 @@ async function select(page: Page, loc: Locator, value: string): Promise<void> {
   await loc.click({ timeout: ACTION_MS });
   const option = await resolveTarget(page, { kind: "text", role: "option", text: value }, "click", 2000);
   const fallback = option.ok ? option : await resolveTarget(page, { kind: "text", text: value }, "click", 2000);
-  if (!fallback.ok) throw new StepError(`option "${value}": ${fallback.reason}`, fallback.choices);
+  if (!fallback.ok) throw new StepError(`option "${value}": ${fallback.reason}`, fallback.choices ? "many-matches" : "option-missing", fallback.choices);
   await fallback.locator.click({ timeout: ACTION_MS });
 }
 
@@ -222,13 +317,22 @@ function visibleText(page: Page, text: string): Locator {
   return page.getByText(text).filter({ visible: true });
 }
 
-async function until(check: () => Promise<boolean>, ms: number, why: string | (() => string)): Promise<void> {
+async function until(check: () => Promise<boolean>, ms: number, why: string | (() => string), code: FailCode): Promise<void> {
   const deadline = Date.now() + ms;
   for (;;) {
     if (await check()) return;
-    if (Date.now() >= deadline) throw new StepError(typeof why === "string" ? why : why());
+    if (Date.now() >= deadline) throw new StepError(typeof why === "string" ? why : why(), code);
     await new Promise((r) => setTimeout(r, 100));
   }
+}
+
+function failCode(e: Error, step: Step): FailCode {
+  if (e instanceof StepError) return e.code;
+  if (step.op === "wait for text") return "text-missing";
+  if (/intercepts pointer events/.test(e.message)) return "covered";
+  if (/not enabled|disabled/.test(e.message)) return "disabled";
+  if (/not visible/.test(e.message)) return "not-visible";
+  return /Timeout \d+ms exceeded/.test(e.message) ? "timeout" : "error";
 }
 
 // Playwright errors carry long call logs; the agent needs one line.
