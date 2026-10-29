@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { changedFields, commitPrompt, safeTask, formatEvidence, mismatchReason, redactEvidence, redactText, runCommitCheck, type Evidence } from "./commit.ts";
+import { changedFields, TEXT_MAX, commitPrompt, safeTask, formatEvidence, mismatchReason, redactEvidence, redactText, runCommitCheck, type Evidence } from "./commit.ts";
 
 test("evidence lists fields with kind, state and value", () => {
   const text = formatEvidence({
@@ -56,6 +56,29 @@ test("changed fields between two readings", () => {
   const at = (amount: string) => ({ title: "", url: "", text: "", fields: [{ label: "Amount", value: amount, kind: "text" }, { label: "Note", value: "x", kind: "text" }] });
   assert.deepEqual(changedFields(at("10.00"), at("10.00")), []);
   assert.deepEqual(changedFields(at("10.00"), at("1000.00")), ["Amount"]);
+});
+
+test("a message that goes away is not a page change; a new or changed message, or other text, is", () => {
+  const ev = (whole: string, transient: { id: number; text: string }[] = []) => ({ title: "", url: "", fields: [], text: whole, whole, transient });
+  const page = "GoMail Compose To Subject Send";
+  assert.deepEqual(changedFields(ev(page, [{ id: 1, text: "Version 2.0 launches soon!" }]), ev(page)), []); // the banner went away
+  assert.deepEqual(changedFields(ev(page), ev(page, [{ id: 2, text: "Price changed to $1000" }])), ["page text"]); // a new alert
+  assert.deepEqual(changedFields(ev(page, [{ id: 1, text: "Total $10" }]), ev(page, [{ id: 1, text: "Total $1000" }])), ["page text"]); // a live total changed
+  // The same text in another message does not hide a change.
+  assert.deepEqual(changedFields(ev(page, [{ id: 1, text: "Total $1000" }, { id: 2, text: "Total $10" }]), ev(page, [{ id: 1, text: "Total $1000" }, { id: 2, text: "Total $1000" }])), ["page text"]);
+  assert.deepEqual(changedFields(ev("Checkout Pay Total 1 000 USD including tax"), ev("Checkout Pay Total 1")), ["page text"]);
+});
+
+test("the change check compares whole texts: a cut text cannot hide a changed price", () => {
+  const filler = "item ".repeat(TEXT_MAX);
+  const ev = (whole: string) => ({ title: "", url: "", fields: [], text: whole.slice(0, TEXT_MAX), whole });
+  assert.deepEqual(changedFields(ev(filler + "Total $10"), ev(filler + "Total $1000")), ["page text"]);
+});
+
+test("the whole text never leaves the machine", () => {
+  const e = { title: "t", url: "https://x.com/", fields: [], text: "short", whole: "short SECRETWHOLE" };
+  assert.equal(JSON.stringify(redactEvidence(e, "task")).includes("SECRETWHOLE"), false);
+  assert.equal(commitPrompt("task", "Send", e).includes("SECRETWHOLE"), false);
 });
 
 test("a secret field's value is removed from every surface", () => {

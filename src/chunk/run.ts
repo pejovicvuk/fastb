@@ -54,9 +54,12 @@ export interface RunHooks {
   // page changes and failed reads are `model: false` and never leave as free text.
   check?: (page: Page, label: string) => Promise<{ reason: string; model: boolean } | null>;
   // A value typed into a secret field (password, card, CVV...): kept locally, so it is
-  // hidden from every later request even when the field is gone.
-  onSecret?: (value: string) => void;
+  // hidden from every later request even when the field is gone. `index`: the step.
+  onSecret?: (value: string, index: number) => void;
   flash?: boolean; // show a short box on each element fastb acts on (only while the live grid is watched)
+  // The words of the control a click step is about to click (step index, label): the done
+  // check's log names what was clicked, also when the step used a ref.
+  onClickLabel?: (index: number, label: string) => void;
 }
 
 // A box over the element for 0.6 s, in its own layer (id __fastb_flash, ignored by settle).
@@ -76,9 +79,11 @@ const flashBox = new Function("el", `return (${FLASH})(el);`) as (el: Element) =
 export async function runChunk(currentPage: () => Promise<Page>, steps: ParsedStep[], hooks: RunHooks = {}): Promise<RunResult> {
   const started = Date.now();
   const allowStep = steps.find((s) => s.step.op === "allow")?.step as { unchecked?: boolean } | undefined;
-  const policy: Policy = { allow: Boolean(allowStep), check: allowStep?.unchecked ? undefined : hooks.check, flash: hooks.flash, onSecret: hooks.onSecret };
+  const policy: Policy = { allow: Boolean(allowStep), check: allowStep?.unchecked ? undefined : hooks.check, flash: hooks.flash };
   for (let i = 0; i < steps.length; i++) {
     hooks.onStep?.(i, steps[i].source);
+    policy.onLabel = hooks.onClickLabel ? (label) => hooks.onClickLabel!(i, label) : undefined;
+    policy.onSecret = hooks.onSecret ? (value) => hooks.onSecret!(value, i) : undefined;
     try {
       await runStep(await currentPage(), steps[i].step, policy);
     } catch (err) {
@@ -118,7 +123,8 @@ interface Policy {
   allow: boolean;
   check?: RunHooks["check"];
   flash?: boolean;
-  onSecret?: RunHooks["onSecret"];
+  onSecret?: (value: string) => void;
+  onLabel?: (label: string) => void;
 }
 
 async function runStep(page: Page, step: Step, policy: Policy): Promise<void> {
@@ -208,6 +214,7 @@ async function runStep(page: Page, step: Step, policy: Policy): Promise<void> {
       const loc = await find(page, step, "input", policy);
       // A password field's value is never printed, not even in a failed check.
       const secret = await loc.evaluate((el) => (el as HTMLInputElement).type === "password").catch(() => false);
+      await noteSecret(loc, step.value, policy);
       let seen = "";
       await until(
         async () => (seen = await loc.inputValue({ timeout: 1000 }).catch(() => "")) === step.value,
@@ -234,7 +241,9 @@ const CONTROL_LABEL = `(el) => {
   const text = (el.innerText || "").replace(/\\s+/g, " ").trim();
   // Long text is a card or a row, not a button: its text and inner icons are not the label.
   const small = text.length <= 40;
-  return [el.getAttribute("aria-label"), el.getAttribute("alt"), labelledBy, el.getAttribute("title"), el.value, small ? icons(el) : "", small ? text : ""];
+  // A value names only a button-like input; a text or password field's value is what someone typed.
+  const value = el.tagName === "INPUT" && /^(button|submit|reset)$/i.test(el.type) ? el.value : "";
+  return [el.getAttribute("aria-label"), el.getAttribute("alt"), labelledBy, el.getAttribute("title"), value, small ? icons(el) : "", small ? text : ""];
 }`;
 // Locator.evaluate does not call a function given as a string; a Function built
 // from the text is sent as that text.
@@ -251,6 +260,7 @@ async function gate(page: Page, loc: Locator, target: Target, policy: Policy): P
   }
   const parts = [target.kind === "text" ? target.text : "", ...own].map((p) => String(p ?? "").replace(/\s+/g, " ").trim()).filter(Boolean);
   const label = [...new Set(parts)].join(" | ");
+  policy.onLabel?.(label.slice(0, 60));
   const word = riskyWord(label);
   if (!word) return;
   if (!policy.allow) throw new StepError(`safety stop: "${label.slice(0, 60)}" looks like a ${word} action. Add the line allow to the chunk if the task needs it`, "safety-stop");

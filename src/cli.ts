@@ -34,8 +34,12 @@ const USAGE = `fastb: fast browser for AI agents
   fastb run --lane eu ... / fastb look --lane eu    continue or read one lane
   fastb lanes look        every lane's page in one call
   fastb lanes report      the Meta model groups all lanes' latest results by cause (a few lines)
+  fastb lanes done        proof of done for every lane at once (one line per lane)
   fastb lanes close       close all lanes
                           new lanes: --timezone America/Los_Angeles, --clock 2024-07-18T09:00:00-07:00
+  fastb done              before you answer DONE: the Meta model checks the task against the
+                          steps that ran and the page now: DONE / NOT DONE: what is missing / NO PROOF
+                          (task from the "task" line, or: fastb done <the task>; one lane: --lane eu)
   fastb watch             open the live grid: every lane (and the main page) as a live picture
   fastb watch stop        stop it
   fastb stats             commands, steps and characters saved so far

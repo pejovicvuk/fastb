@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { parseChunk } from "./parse.ts";
 import { runChunk } from "./run.ts";
+import { changedFields, readEvidence } from "../check/commit.ts";
 
 // Runs chunks in a real headless Chrome. Skipped when Chrome is not installed.
 let browser: Browser | undefined;
@@ -161,4 +162,47 @@ test("a page-change stop is a fixed code, not free text; secret fields report ty
   assert.equal(r.failure?.code, "check-blocked");
   assert.equal(r.failure?.checkReason, undefined);
   assert.deepEqual(secrets, ["hunter22", "4242424242424242"]);
+});
+
+test("a click label names the control, never a value typed into a field", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  await page.setContent(`<input type="password" aria-label="Password" value="hunter2"><input type="submit" value="Send now">`);
+  const labels: [number, string][] = [];
+  const r = await runChunk(async () => page, parseChunk('allow unchecked\nclick "Password"\nclick "Send now"'), { onClickLabel: (i, l) => labels.push([i, l]) });
+  assert.equal(r.ok, true, r.failure?.reason);
+  assert.equal(JSON.stringify(labels).includes("hunter2"), false, JSON.stringify(labels));
+  assert.deepEqual(labels.map(([i]) => i), [1, 2]);
+  assert.match(labels[1][1], /Send now/);
+});
+
+test("a page reading keeps messages apart by element, so one that goes away is no change", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  await page.setContent(`<div role="alert">Version 2.0 launches soon! Mail alice@example.com</div>
+    <main>Compose <span id="chip">alice@example.com</span> <button>Send</button> <span id="total">Total $10</span></main>
+    <div role="status" id="promo">Total $1000</div><div role="status" id="live">Total $10</div>`);
+  const before = await readEvidence(page);
+  assert.deepEqual(before.transient?.map((m) => m.text), ["Version 2.0 launches soon! Mail alice@example.com", "Total $1000", "Total $10"]);
+  assert.equal(before.whole?.includes("launches"), false);
+  assert.match(before.whole ?? "", /alice@example\.com/); // the same words outside the message stay
+  assert.match(before.text, /launches soon/); // the model still sees the message
+  await page.evaluate(`document.querySelector('[role=alert]').remove()`);
+  assert.deepEqual(changedFields(before, await readEvidence(page)), []);
+  // A recipient chip removed while a message holds the same address: a change.
+  await page.evaluate(`document.getElementById('chip').remove()`);
+  assert.deepEqual(changedFields(before, await readEvidence(page)), ["page text"]);
+  // A live total changes to text another message already shows: a change.
+  await page.setContent(`<main>Pay</main><div role="status">Total $1000</div><div role="status">Total $10</div>`);
+  const b2 = await readEvidence(page);
+  await page.evaluate(`document.querySelectorAll('[role=status]')[1].textContent = "Total $1000"`);
+  assert.deepEqual(changedFields(b2, await readEvidence(page)), ["page text"]);
+  // Text under display: contents is drawn, so a change there counts; hidden text does not.
+  await page.setContent(`<main>Pay <span style="display:contents">Total $10</span> <span style="visibility:hidden">x1</span> <span hidden>x2</span></main>`);
+  const b3 = await readEvidence(page);
+  assert.match(b3.whole ?? "", /Total \$10/);
+  assert.doesNotMatch(b3.whole ?? "", /x1|x2/);
+  await page.evaluate(`document.querySelector('span').textContent = "Total $1000"`);
+  assert.deepEqual(changedFields(b3, await readEvidence(page)), ["page text"]);
+  // A large element or one with fields is page content, not a message.
+  await page.setContent(`<div role="status">Amount <input aria-label="Amount" value="10"></div>`);
+  assert.deepEqual((await readEvidence(page)).transient, []);
 });

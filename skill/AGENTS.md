@@ -12,6 +12,7 @@ fastb look                print the whole current page
 fastb run <<'EOF'         run many steps, one per line
 ...steps...
 EOF
+fastb done                before you answer DONE: checks that the task is really done
 ```
 
 ## The page text
@@ -42,7 +43,7 @@ One step per line. Values need no quotes. Labels and names go in double quotes.
 - `wait for text "Saved"`, `wait for gone "Loading"`, `wait 500ms`
 - `expect text "Welcome"`, `expect no text "Error"`, `expect url /dashboard`, `expect value "Email" = bob@x.com`: checks; a failed check stops the run
 - `allow`: lets this run click send / delete / pay / order / book controls (`allow unchecked` also skips the checker)
-- `task <text>`: the task of this run or lane; the checker compares the page with it before a send / pay / book click
+- `task <text>`: the task of this run or lane, in the user's words. The checker compares the page with it before a send / pay / book click, and `fastb done` checks it at the end. Put it in your first run.
 - Lines that start with `#` are comments.
 
 ## How to work
@@ -56,6 +57,12 @@ One step per line. Values need no quotes. Labels and names go in double quotes.
    - `STOP at step 4/6`: steps 1 to 3 are done. Read the reason and the changes. Send a new run that fixes step 4 and does the rest. Do not repeat the steps that are done.
    - `N elements match` lists the choices: add `#n` to the target, or use a ref.
 4. Run `fastb look` only when you need the whole page again.
+5. **Before you answer DONE, run `fastb done`.** A checker compares the task with the steps that really ran and the page now. It answers:
+   - `DONE: ...`: answer DONE.
+   - `NOT DONE: <what is missing>`: do the missing part (for example, click Send), then run `fastb done` again.
+   - `NO PROOF: <page>`: open the page that shows the result (Sent folder, order list, booking page), then run `fastb done` again.
+   - If it says NOT DONE about a send / pay / book click that already ran, open the page that shows it before you click again: never send or pay twice.
+   - After two checks that you are sure are wrong, or when the check is off or failed, decide yourself.
 
 ## Many tasks at once: lanes
 
@@ -76,7 +83,8 @@ EOF
 - The answer starts with one line for all lanes, then each lane's report with its name in front: `[eu] STOP at step 2/3: click "Checkout"`, then that lane's changes only.
 - Lanes stay open. To continue several lanes, send `fastb lanes` again with the same lane names: each block goes on in its lane. To continue one lane: `fastb run --lane eu <<'EOF' ... EOF`. To read one lane's whole page: `fastb look --lane eu`. To read every lane's page in one call: `fastb lanes look`. With many lanes, `fastb lanes report` groups their latest results by cause in a few lines.
 - Put every lane you can into the same call. Do not run lanes one after another when they can run together.
-- Each lane has its own `allow` line.
+- Each lane has its own `allow` and `task` lines.
+- Before you answer DONE: `fastb lanes done` checks every lane at once, one line per lane.
 
 ## Rules
 

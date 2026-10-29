@@ -16,6 +16,7 @@ import { runChunk, type RunHooks, type RunResult } from "../chunk/run.ts";
 import type { ParsedStep } from "../chunk/parse.ts";
 import { commitCheck, readEvidence, REMOTE_CHECK_FILE, remoteCheckEnabled, runCommitCheck } from "../check/commit.ts";
 import { laneReport, type LaneOutcome } from "../check/report.ts";
+import { doneCheck, doneLine, keepActions, lanesDoneText, logLine, type DoneStatus } from "../check/done.ts";
 import { startWatch, type WatchLane } from "../watch/server.ts";
 import { safeStep } from "../watch/logic.ts";
 import { combineLanes, parseLanes } from "../chunk/lanes.ts";
@@ -63,15 +64,28 @@ function watchLanes(): WatchLane[] {
 const tasks = new Map<string, string>();
 // Values typed into secret fields, per lane: hidden from every later Meta request.
 const secretsByLane = new Map<string, Set<string>>();
+// The steps that really ran since the task was set, per lane: what "fastb done" checks.
+const actions = new Map<string, string[]>();
+// Lanes whose last done check said DONE: their next "task" line starts a new log, even
+// with the same text (a second, equal task must not borrow the first one's Send click).
+const finished = new Set<string>();
+function recordActions(key: string, steps: ParsedStep[], done: number, track: { labels: Map<number, string>; secretSteps: Set<number> }): void {
+  const lines = steps.slice(0, done).map((s, i) => logLine(s.step, track.labels.get(i), track.secretSteps.has(i)));
+  actions.set(key, keepActions(actions.get(key) ?? [], lines));
+}
 // Commit checks run in this command, for the stats line, and notes for the agent.
 let checks = { n: 0, ms: 0, stopped: 0 };
 let notes = new Set<string>();
 
 // Hooks for one chunk: the live grid status, and the commit check when the lane has a task.
-function hooksFor(name: string | undefined, steps: ParsedStep[]): { hooks: RunHooks; end(ok: boolean): void } {
+function hooksFor(name: string | undefined, steps: ParsedStep[]): { hooks: RunHooks; labels: Map<number, string>; secretSteps: Set<number>; end(ok: boolean): void } {
   const key = name ?? "";
   const taskStep = steps.find((s) => s.step.op === "task")?.step as { text: string } | undefined;
-  if (taskStep) tasks.set(key, taskStep.text);
+  if (taskStep) {
+    if (tasks.get(key) !== taskStep.text || finished.has(key)) actions.delete(key); // a new task starts a new log
+    finished.delete(key);
+    tasks.set(key, taskStep.text);
+  }
   const check: RunHooks["check"] = async (page, label) => {
     const task = tasks.get(key);
     if (!task) return null;
@@ -90,10 +104,18 @@ function hooksFor(name: string | undefined, steps: ParsedStep[]): { hooks: RunHo
     return out.kind === "stop" ? { reason: out.reason, model: out.model } : null;
   };
   laneStatus.set(key, { state: "running" });
+  const labels = new Map<number, string>();
+  const secretSteps = new Set<number>();
   return {
+    labels,
+    secretSteps,
     hooks: {
+      onClickLabel: (i, label) => labels.set(i, label),
       check,
-      onSecret: (value) => secretsByLane.set(key, (secretsByLane.get(key) ?? new Set()).add(value)),
+      onSecret: (value, i) => {
+        secretsByLane.set(key, (secretsByLane.get(key) ?? new Set()).add(value));
+        secretSteps.add(i);
+      },
       flash: Boolean(watcher),
       onStep: (_i, source) => laneStatus.set(key, { state: "running", step: source }) },
     end: (ok) => laneStatus.set(key, { state: ok ? "ok" : "stopped", step: laneStatus.get(key)?.step }),
@@ -150,6 +172,7 @@ async function handle(req: Request): Promise<Handled> {
       const track = hooksFor(typeof req.flags.lane === "string" ? req.flags.lane : undefined, steps);
       const result = await runChunk(getPage, steps, track.hooks);
       track.end(result.ok);
+      recordActions(typeof req.flags.lane === "string" ? req.flags.lane : "", steps, result.done, track);
       const report = await runReport(result, async () => {
         const page = await getPage();
         return req.flags["no-look"] ? { text: await pageHeader(page) } : showChanges(page);
@@ -164,6 +187,8 @@ async function handle(req: Request): Promise<Handled> {
         laneOutcomes.clear();
         for (const name of session.laneNames()) secretsByLane.delete(name);
         for (const name of session.laneNames()) tasks.delete(name);
+        for (const name of session.laneNames()) actions.delete(name);
+        for (const name of session.laneNames()) finished.delete(name);
         return ok(`lanes: closed ${await session.closeLanes()}`);
       }
       if (!input || input === "list") return ok(session.laneNames().length ? `lanes: ${session.laneNames().join(" ")}` : "lanes: none open");
@@ -172,6 +197,19 @@ async function handle(req: Request): Promise<Handled> {
         const names = session.laneNames().filter((n) => laneOutcomes.has(n));
         if (!names.length) return ok("lanes: nothing to report yet");
         return ok(await laneReport(names.map((name) => ({ name, outcome: laneOutcomes.get(name)! }))));
+      }
+      if (input === "done") {
+        if (!remoteCheckEnabled()) return fail(doneOff());
+        const names = session.laneNames();
+        if (!names.length) return ok("lanes: none open");
+        const started = Date.now();
+        const rows = await Promise.all(
+          names.map(async (name) => {
+            const r = await checkDone(name, () => session.lane(name, req.options));
+            return { name, line: r.text, status: r.status };
+          }),
+        );
+        return ok(lanesDoneText(rows, Date.now() - started));
       }
       if (input === "look") {
         // Every lane's page in one call (an agent may not loop over lanes in the shell).
@@ -212,6 +250,7 @@ async function handle(req: Request): Promise<Handled> {
           try {
             const result = await runChunk(getPage, b.steps, track.hooks);
             track.end(result.ok);
+            recordActions(b.name, b.steps, result.done, track);
             const report = await runReport(result, async () => {
               const page = await getPage();
               return req.flags["no-look"] ? { text: await pageHeader(page) } : showChanges(page);
@@ -231,6 +270,17 @@ async function handle(req: Request): Promise<Handled> {
         stat: { steps: sum((r) => r.total), done: sum((r) => r.done), lanes: results.length },
       };
     }
+    case "done": {
+      // Proof of done: the agent runs this before it answers DONE.
+      const lane = typeof req.flags.lane === "string" ? req.flags.lane : undefined;
+      const key = lane ?? "";
+      const given = req.args.join(" ").trim();
+      if (given && tasks.get(key) !== given) tasks.set(key, given);
+      if (!remoteCheckEnabled()) return fail(doneOff());
+      if (lane && !session.laneNames().includes(lane)) return fail(`done: no lane ${lane}`);
+      const r = await checkDone(key, target(req));
+      return { ok: r.status === "done", text: r.text };
+    }
     case "watch": {
       if (req.args[0] === "stop") {
         await watcher?.close();
@@ -248,6 +298,25 @@ async function handle(req: Request): Promise<Handled> {
       return ok("engine: stopped");
     default:
       return fail(`unknown command: ${req.cmd}`);
+  }
+}
+
+const doneOff = () => `done check is off: it sends page facts to the Meta API. A person turns it on by writing "on" to ${REMOTE_CHECK_FILE}`;
+
+// One done check for a lane (or the main page, key ""): task, steps that ran, page now.
+async function checkDone(key: string, getPage: () => Promise<Page>): Promise<{ text: string; status?: DoneStatus }> {
+  const task = tasks.get(key);
+  if (!task) return { text: 'done: no task. Put the line "task <the task, in the user\'s words>" in a run, or run: fastb done <the task>' };
+  try {
+    const page = await getPage();
+    await settle(page, { maxMs: 3000 });
+    const evidence = await readEvidence(page);
+    const v = await doneCheck(task, actions.get(key) ?? [], evidence, [...(secretsByLane.get(key) ?? [])]);
+    checks = { n: checks.n + 1, ms: checks.ms + v.ms, stopped: checks.stopped + (v.status === "done" ? 0 : 1) };
+    if (v.status === "done") finished.add(key);
+    return { text: doneLine(v), status: v.status };
+  } catch (err) {
+    return { text: `done check failed (${firstLine(err)}); decide yourself from the page` };
   }
 }
 

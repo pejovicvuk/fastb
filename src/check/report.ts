@@ -2,7 +2,7 @@
 // so the agent reads a few lines instead of every lane's output.
 
 import { chatJson } from "../model/meta.ts";
-import { redactText } from "./commit.ts";
+import { assertRemoteCheck, redactText } from "./commit.ts";
 import type { Step } from "../chunk/parse.ts";
 import type { FailCode } from "../chunk/run.ts";
 
@@ -128,6 +128,7 @@ export function formatReport(groups: Group[], ms: number): string {
 }
 
 export async function laneReport(items: LaneItem[]): Promise<string> {
+  assertRemoteCheck();
   const r = await chatJson<{ groups: Group[] }>({ system: SYSTEM, user: reportInput(items), name: "LaneReport", schema: SCHEMA });
   // Keep only lanes that exist, each once: the model must not invent or repeat lanes.
   const known = new Set(items.map((i) => i.name));

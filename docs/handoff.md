@@ -20,13 +20,14 @@ A fast browser-execution engine for AI coding agents (Claude Code, Codex). The a
 - Codex review of phases 5-7: 9 rounds, all findings fixed; stopped by plan (A). Known limits in docs/plan.md (phase 7).
 - Remote check switch: a person writes `on` to `~/.fastb/remote-check` (removed now). Bench harnesses write it before a run and remove it after.
 
-## Phase 8 in progress (2026-10-29)
+## Phase 8 paused by Vuk (2026-10-29)
 
-- Part 1 running: Codex + fastb x1 (`run_all_codex.sh` -> `results/codex-r1.jsonl`), then Claude Code + fastb x3 (`fastb-r1..r3.jsonl`), all with the current code (`phase8-part1.sh`).
-- Part 2 to start after it: lanes x3 (`run_all_lanes.sh`, move `lanes.jsonl` to `lanes-r1..r3.jsonl` after each pass).
-- Part 3: baseline x2 (`run_all_baseline.sh`, move `baseline.jsonl` to `baseline-r2`, `-r3`; run 4 is `baseline-r1.jsonl`).
-- Combine: `.venv/bin/python compare_runs.py`. Old runs kept: `fastb-run1..4.jsonl`, `lanes-old.jsonl`, `baseline-oldclock.jsonl`, `codex-smoke.jsonl`.
-- Drafts waiting for the final numbers: `README.md` (rewritten, no em dashes), `docs/video-script.md`, `LICENSE` (MIT).
+- Done: Codex + fastb on all 22 tasks (`results/codex-r1.jsonl`): 16/22 passed. Harness fix: `codex exec` needs stdin closed (`stdin=DEVNULL` in run_codex.py), else it waits forever.
+- Stopped in the middle: Claude Code + fastb r1 after 5 tasks (`results/fastb-r1-partial.jsonl`). Not started: fastb r2, r3; lanes x3; baseline x2.
+- Decision A taken (2026-10-29): "proof of done" built (`fastb done`, `fastb lanes done`; docs/plan.md phase 7b). Live test on gomail-3 passes. Commit check flakes fixed on the way. Codex review: 4 rounds, all findings fixed. 103 tests pass, `dist/` is built. Commit message: `.fastb/commit-msg.txt`.
+- Bench harnesses now start the test Chrome headless (Vuk: visible windows took focus). Baseline r2 + r3 run headless (`phase8-baseline.sh`); baseline r1 was headed. One headed r2 task was discarded (`baseline-r2-headed-discard.jsonl`).
+- Running (nohup, survives the session): `~/Desktop/fastb-bench/phase8-final.sh`, log `results/phase8-final.log`. Waits for baseline r3, then fastb x3, lanes x3, Codex x1 with the final code. Results: `results/final-*.jsonl`. Baseline r3 first try lost the network (`baseline-r3-netdrop-discard.jsonl`), rerun in full.
+- Drafts waiting for the final numbers: `README.md` (rewritten, with a Mermaid diagram), `docs/video-script.md`, `LICENSE` (MIT).
 
 ## Next steps
 

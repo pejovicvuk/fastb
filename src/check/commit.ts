@@ -21,7 +21,19 @@ export interface Evidence {
   url: string;
   fields: Field[];
   text: string; // visible page text, cut
+  // Only compared on this machine, never sent: all visible text (up to WHOLE_MAX) without
+  // short messages (alerts, status lines, toasts, banners), and those messages apart.
+  whole?: string;
+  transient?: { id: number; text: string }[];
 }
+
+export const TEXT_MAX = 4000; // characters of visible page text sent in one check
+const WHOLE_MAX = 200000; // characters compared between two readings (never sent)
+// Short messages that come and go by themselves (alerts, status lines, toasts): when one
+// goes away during the check, the page did not change in a way that matters. Only small
+// elements with no form fields count; a new message, or a message whose text changed, is a change.
+const TRANSIENT = '[role="alert"], [role="status"], [role="log"], [role="marquee"], [role="timer"], [aria-live="polite"], [aria-live="assertive"], [class*="toast" i], [class*="snackbar" i]';
+const MESSAGE_MAX = 500; // characters: a longer element is page content, not a message
 
 // Read in the page. Plain JS text: a transpiled function may carry helpers the page lacks.
 const READ_EVIDENCE = `(() => {
@@ -45,7 +57,34 @@ const READ_EVIDENCE = `(() => {
     fields.push({ label: labelOf(el).slice(0, 80), value: clean(String(value)).slice(0, 200), kind, state: state || undefined });
     if (fields.length >= 60) break;
   }
-  return { title: document.title, url: location.href, fields, text: clean(document.body.innerText).slice(0, 4000) };
+  const all = clean(document.body.innerText);
+  // Messages: outermost small elements with no fields. Each keeps one id for the page's life
+  // (a WeakMap in the page, not an attribute: the page is not changed).
+  const ids = (window.__fastbMessageIds ??= { map: new WeakMap(), next: 1 });
+  const isMessage = (el) => el.matches(${JSON.stringify(TRANSIENT)}) && visible(el) &&
+    !el.querySelector('input, select, textarea, [contenteditable="true"]') && clean(el.innerText).length <= ${MESSAGE_MAX};
+  const messages = Array.from(document.querySelectorAll(${JSON.stringify(TRANSIENT)})).filter(isMessage)
+    .filter((el) => { for (let a = el.parentElement; a; a = a.parentElement) if (isMessage(a)) return false; return true; });
+  const inMessage = new Set(messages);
+  const transient = messages.map((el) => {
+    if (!ids.map.has(el)) ids.map.set(el, ids.next++);
+    return { id: ids.map.get(el), text: clean(el.innerText) };
+  });
+  // All visible text outside the messages, node by node (the same words elsewhere stay).
+  const parts = [];
+  const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  // A text node is visible when it has boxes on screen (also under display: contents,
+  // where the parent element itself has none) and its parent is not visibility: hidden.
+  const range = document.createRange();
+  const shown = (n) => { range.selectNodeContents(n); return range.getClientRects().length > 0 && getComputedStyle(n.parentElement).visibility !== "hidden"; };
+  for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+    const el = n.parentElement;
+    if (!el || !n.textContent.trim() || !shown(n)) continue;
+    let skip = false;
+    for (let a = el; a && !skip; a = a.parentElement) skip = inMessage.has(a);
+    if (!skip) parts.push(n.textContent);
+  }
+  return { title: document.title, url: location.href, fields, text: all.slice(0, ${TEXT_MAX}), whole: clean(parts.join(" ")).slice(0, ${WHOLE_MAX}), transient };
 })()`;
 
 export async function readEvidence(page: Page): Promise<Evidence> {
@@ -117,6 +156,12 @@ export function remoteCheckEnabled(): boolean {
   return existsSync(REMOTE_CHECK_FILE) && readFileSync(REMOTE_CHECK_FILE, "utf8").trim() === "on";
 }
 
+// Asked again right before each request: page reads take time, and the person may
+// have turned the check off since the command started.
+export function assertRemoteCheck(): void {
+  if (!remoteCheckEnabled()) throw new Error("the remote check was turned off");
+}
+
 export function formatEvidence(e: Evidence): string {
   const fields = e.fields.map((f) => `- ${f.label || "(no label)"} [${f.kind}${f.state ? " " + f.state : ""}]: ${f.value || "(empty)"}`);
   return [`page: ${e.title} | ${e.url}`, "fields:", ...(fields.length ? fields : ["- (none)"]), "visible text:", e.text].join("\n");
@@ -132,6 +177,7 @@ You get the user's task, the control about to be clicked, and evidence from the 
 Report a mismatch only when the evidence clearly shows a value that differs from what the task asks, or a value the task requires is visibly missing or empty.
 Values may be written differently and still match: 2024-07-20 = July 20, 2024 = 07/20/2024; 7 PM = 19:00 = 7:00 PM; "4 people" = 4.
 If the task says "anything" or leaves a value open, any value matches. If the evidence does not show a fact at all, do not report it.
+Some fields turn a typed value into a chip or tag (To, Cc, tags) and then look empty: if the visible text shows the value, it is not missing.
 Be brief: fact names of 1 to 3 words.`;
 
 const SCHEMA = {
@@ -173,6 +219,7 @@ export function commitPrompt(task: string, action: string, evidence: Evidence, k
 }
 
 export async function commitCheck(task: string, action: string, evidence: Evidence, known: string[] = []): Promise<Verdict & { ms: number }> {
+  assertRemoteCheck();
   const r = await chatJson<Verdict>({
     system: SYSTEM,
     user: commitPrompt(task, action, evidence, known),
@@ -235,7 +282,12 @@ export function changedFields(before: Evidence, after: Evidence): string[] {
     if (!a || !b || a.label !== b.label || a.kind !== b.kind || a.value !== b.value || a.state !== b.state) out.push((b ?? a).label || `field ${i + 1}`);
   }
   if (before.url !== after.url) out.push("url");
-  if (before.text !== after.text) out.push("page text");
+  if ((before.whole ?? before.text) !== (after.whole ?? after.text)) out.push("page text");
+  else {
+    // A message may go away; a new one, or one whose text changed, is a change.
+    const was = new Map((before.transient ?? []).map((m) => [m.id, m.text]));
+    if ((after.transient ?? []).some((m) => was.get(m.id) !== m.text)) out.push("page text");
+  }
   return out;
 }
 
