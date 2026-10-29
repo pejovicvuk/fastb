@@ -157,7 +157,8 @@ async function handle(req: Request): Promise<Handled> {
     case "look": {
       const page = await target(req)();
       await settle(page, { maxMs: 3000 });
-      let text = req.flags.full ? await look(page, { full: true }) : await showPage(page, { all: true });
+      // Big pages are cut to the view budget like every other view; --all shows every line.
+      let text = req.flags.full ? await look(page, { full: true }) : await showPage(page, { all: Boolean(req.flags.all) });
       if (req.flags.shot) {
         mkdirSync(SHOTS_DIR, { recursive: true });
         const file = join(SHOTS_DIR, `${Date.now()}.png`);

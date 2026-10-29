@@ -8,7 +8,7 @@
 
 ```
 fastb open <url>          open a page and print it
-fastb look                print the whole current page
+fastb look                print the current page again (a big page is cut to fit)
 fastb run <<'EOF'         run many steps, one per line
 ...steps...
 EOF
@@ -29,7 +29,7 @@ dialog "New Message":
 
 `@e12` is a ref: a handle to one element. Refs from the latest output are valid. They can look like `@f1e40`.
 
-A big page is cut to fit. `[+40 more like this; fastb look shows all]` marks hidden items of a list. `(same: @e70 @e95)` marks the same control shown again with other refs: use one of the refs. Hidden elements still work as targets by their text: `click "Papa Johns Pizza"`. Run `fastb look` only when you must read the hidden part.
+A big page is cut to fit. `[+40 more like this; fastb look --all shows all]` marks hidden items of a list. `(same: @e70 @e95)` marks the same control shown again with other refs: use one of the refs. Hidden elements still work as targets by their text: `click "Papa Johns Pizza"`. Run `fastb look --all` only when you must read the hidden part.
 
 ## Steps
 
@@ -58,7 +58,7 @@ One step per line. Values need no quotes. Labels and names go in double quotes.
    - `OK 6/6 steps` and then **only what changed** since your last view: `+` new line, `-` gone line, `~` same element with a new value or state. Lines with no mark are section names, for context.
    - `STOP at step 4/6`: steps 1 to 3 are done. Read the reason and the changes. Send a new run that fixes step 4 and does the rest. Do not repeat the steps that are done.
    - `N elements match` lists the choices: add `#n` to the target, or use a ref.
-4. Run `fastb look` only when you need the whole page again.
+4. Run `fastb look` only when you need the page again.
 5. **Before you answer DONE, run `fastb done`.** A checker compares the task with the steps that really ran and the page now. It answers:
    - `DONE: ...`: answer DONE.
    - `NOT DONE: <what is missing>`: do the missing part (for example, click Send), then run `fastb done` again.
@@ -84,7 +84,7 @@ EOF
 ```
 
 - The answer starts with one line for all lanes, then each lane's report with its name in front: `[eu] STOP at step 2/3: click "Checkout"`, then that lane's changes only.
-- Lanes stay open. To continue several lanes, send `fastb lanes` again with the same lane names: each block goes on in its lane. To continue one lane: `fastb run --lane eu <<'EOF' ... EOF`. To read one lane's whole page: `fastb look --lane eu`. To read every lane's page in one call: `fastb lanes look`. With many lanes, `fastb lanes report` groups their latest results by cause in a few lines.
+- Lanes stay open. To continue several lanes, send `fastb lanes` again with the same lane names: each block goes on in its lane. To continue one lane: `fastb run --lane eu <<'EOF' ... EOF`. To read one lane's page: `fastb look --lane eu`. To read every lane's page in one call: `fastb lanes look`. With many lanes, `fastb lanes report` groups their latest results by cause in a few lines.
 - Put every lane you can into the same call. Do not run lanes one after another when they can run together.
 - Each lane has its own `allow` and `task` lines.
 - Before you answer DONE: `fastb lanes done` checks every lane at once, one line per lane.

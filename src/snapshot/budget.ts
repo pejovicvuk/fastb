@@ -3,7 +3,7 @@
 // agent read in our bench runs. Idea from Lightpanda's ranked view budget (our own code):
 // repeated controls fold to one line that keeps every ref, the biggest runs of similar
 // items keep their first items, page chrome folds last, and every cut leaves a marker
-// line. Steps can still target hidden elements by text; `fastb look` shows the whole page.
+// line. Steps can still target hidden elements by text; `fastb look --all` shows the whole page.
 
 export const VIEW_BUDGET = 8000;
 
@@ -112,7 +112,7 @@ function render(n: Node, runs: Map<Node, Run[]>, protect: (n: Node) => boolean):
   for (const k of n.kids) {
     const h = hidden.get(k);
     if (!h) kids.push(render(k, runs, protect));
-    else if (h.first) kids.push({ line: marker(indentOf(k.line), `+${h.count} more like this; fastb look shows all`), kids: [] });
+    else if (h.first) kids.push({ line: marker(indentOf(k.line), `+${h.count} more like this; fastb look --all shows all`), kids: [] });
   }
   return { line: n.line, kids };
 }
@@ -158,7 +158,7 @@ export function budgetView(lines: string[], max = VIEW_BUDGET, keep: ReadonlySet
   const fold = (n: Node): Node => {
     if (KEEP_WHOLE.test(n.line.trimStart())) return n;
     if (CHROME.test(n.line.trimStart()) && count(n.kids) > 3 && !n.kids.some(protect)) {
-      return { line: n.line, kids: [{ line: marker(indentOf(n.line) + 2, `${count(n.kids)} lines hidden; fastb look shows them`), kids: [] }] };
+      return { line: n.line, kids: [{ line: marker(indentOf(n.line) + 2, `${count(n.kids)} lines hidden; fastb look --all shows them`), kids: [] }] };
     }
     return { line: n.line, kids: n.kids.map(fold) };
   };

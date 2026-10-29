@@ -17,7 +17,7 @@ test("the biggest run of similar items keeps its first items and says how many a
   assert.equal(out[0], '@e1 textbox "Search"');
   assert.ok(out.includes('    @e11 link "House 1, Main St"'));
   assert.ok(!out.some((l) => l.includes("House 40")));
-  assert.ok(out.some((l) => /^  \[\+\d+ more like this; fastb look shows all\]$/.test(l)));
+  assert.ok(out.some((l) => /^  \[\+\d+ more like this; fastb look --all shows all\]$/.test(l)));
   assert.equal(out.at(-1), '@e9 button "Next page"'); // what comes after the list stays
 });
 
@@ -70,7 +70,7 @@ test("page chrome folds last, to one line, but never inside a dialog", () => {
   const nav = Array.from({ length: 5 }, (_, i) => `  @e${i} link "Section ${i} with a long name to fill the line"`);
   const lines = ['navigation "Main":', ...nav, "# Title", "Body text"];
   const out = budgetView(lines, 120);
-  assert.deepEqual(out, ['navigation "Main":', "  [5 lines hidden; fastb look shows them]", "# Title", "Body text"]);
+  assert.deepEqual(out, ['navigation "Main":', "  [5 lines hidden; fastb look --all shows them]", "# Title", "Body text"]);
   const inDialog = ['dialog "Menu":', ...[...lines.slice(0, 6)].map((l) => "  " + l)];
   assert.deepEqual(budgetView(inDialog, 120), inDialog);
 });

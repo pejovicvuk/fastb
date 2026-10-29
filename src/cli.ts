@@ -12,6 +12,7 @@ const USAGE = `fastb: fast browser for AI agents
 
   fastb open <url>        open a page and print it (add --quiet to skip the page)
   fastb look              print the current page as short text with refs (@e3)
+  fastb look --all        print every line (a big page is cut to fit)
   fastb look --shot       also save a screenshot and print its path
   fastb look --full       print the full raw snapshot
   fastb run <<'EOF'       run many steps in one call; stops at the first surprise
