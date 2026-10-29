@@ -1,6 +1,7 @@
 import type { Page } from "playwright-core";
 import { pageHeader, pageLines } from "../snapshot/look.ts";
 import { diffPage } from "../snapshot/diff.ts";
+import { budgetView } from "../snapshot/budget.ts";
 import type { RunResult } from "../chunk/run.ts";
 
 // What the agent is shown of the page, and the page as it last saw it.
@@ -21,10 +22,12 @@ export function forgetView(page: Page): void {
   seen.delete(page);
 }
 
-export async function showPage(page: Page): Promise<string> {
+// A big page is cut to a size budget (see budget.ts); `all` shows every line.
+// The base for later diffs is always the whole page.
+export async function showPage(page: Page, opts: { all?: boolean } = {}): Promise<string> {
   const lines = await pageLines(page);
   seen.set(page, lines);
-  return `${await pageHeader(page)}\n${lines.join("\n")}`;
+  return `${await pageHeader(page)}\n${(opts.all ? lines : budgetView(lines)).join("\n")}`;
 }
 
 // After a chunk: only what changed since the agent last saw this page, or the
@@ -34,9 +37,12 @@ export async function showChanges(page: Page): Promise<View> {
   const lines = await pageLines(page);
   const before = seen.get(page);
   seen.set(page, lines);
-  const fullText = `${header}\n${lines.join("\n")}`;
-  if (!before) return { text: fullText };
+  if (!before) return { text: `${header}\n${budgetView(lines).join("\n")}` };
   const d = diffPage(before, lines);
+  // When the full page is sent instead of the changes, the budget must not hide the
+  // changes. On a new page (most lines new) there is nothing to keep apart.
+  const news = d.lines.filter((l) => l.startsWith("+ ") || l.startsWith("~ ")).map((l) => l.slice(2));
+  const fullText = `${header}\n${budgetView(lines, undefined, news.length < lines.length / 2 ? new Set(news) : undefined).join("\n")}`;
   const changes = d.lines.length
     ? `changes since the last view (+${d.added} -${d.removed} ~${d.changed}):\n${d.lines.join("\n")}`
     : "no changes on the page";

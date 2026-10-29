@@ -81,3 +81,11 @@ A fast browser-execution engine for AI coding agents (Claude Code, Codex). The a
   - Against the headless baseline (r2, r3 mean: 17.5/22, 1517 s, 620 turns, $5.08): 1.27x faster in total time, 2.6x fewer turns, 31% cheaper, +1 task.
   - Lanes (first done code, 3 runs): 18-19/22, about 1000 s, about 150 turns, about $2.85: 1.5x faster, 4x fewer turns, 44% cheaper.
   - Not yet checked: whether the 14-20 NOT DONE answers per run are all real catches.
+- Lightpanda ideas (decision A, 2026-10-29; notes in docs/research-lightpanda.md):
+  - Built: view budget (src/snapshot/budget.ts, 8 KB per full view, `fastb look` shows all). Bench pages: full views 501 KB -> 328 KB. Codex review 2 rounds, all fixed; 112 tests pass.
+  - Not built: action-caused waits. Measured with FASTB_TRACE on REAL: waits are about 0.3 s, one 2.6 s after a page change; little to gain.
+  - Dropped: blocking images, fonts and video. Page opens 0.7-1 s with or without; no gain.
+  - Running: `phase8-final3.sh` (fastb x3 with the budget) -> `results/final3-fastb-rN.jsonl`, log `results/phase8-final3.log`, started 22:05.
+- final3 (view budget, fastb x3, done 23:00): 20/22, 17/22, 19/22; median 45.5 / 42.3 / 38.3 s; total 1032 / 928 / 1052 s (mean 1004 s, was 1194 s: 16% faster); 259 / 235 / 253 turns; $3.57 / $3.34 / $3.59. Against the headless baseline (1517 s): 1.51x faster in total time.
+  - New fail: zilloft-6 in r2 (site search gave San Marcos; fastb done said NOT DONE, the agent answered DONE anyway). Not caused by the budget.
+  - Text to the agent fell only about 10% (608 KB -> 525-563 KB): `fastb look` shows the whole page, and agents start with it. Plain `fastb look` was about 190 KB per run, 9-11 calls over 8 KB. Next candidate: budget `fastb look` too, `fastb look --all` for everything.

@@ -1,4 +1,8 @@
 import type { Page } from "playwright-core";
+import { appendFileSync } from "node:fs";
+
+// FASTB_TRACE=<file>: one line per wait (how long, and why it ended), to tune the waits.
+const TRACE = process.env.FASTB_TRACE;
 
 export interface SettleOptions {
   quietMs?: number;
@@ -58,5 +62,13 @@ export async function settle(page: Page, opts: SettleOptions = {}): Promise<numb
       await page.waitForLoadState("domcontentloaded", { timeout: Math.max(1, left) }).catch(() => {});
     }
   }
-  return Date.now() - started;
+  const ms = Date.now() - started;
+  if (TRACE) {
+    try {
+      appendFileSync(TRACE, `settle ${ms}ms quiet=${quietMs} max=${maxMs}${ms >= maxMs ? " TIMEOUT" : ""} ${page.url()}\n`);
+    } catch {
+      // a trace must never fail a step that already ran
+    }
+  }
+  return ms;
 }

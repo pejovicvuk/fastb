@@ -29,6 +29,8 @@ dialog "New Message":
 
 `@e12` is a ref: a handle to one element. Refs from the latest output are valid. They can look like `@f1e40`.
 
+A big page is cut to fit. `[+40 more like this; fastb look shows all]` marks hidden items of a list. `(same: @e70 @e95)` marks the same control shown again with other refs: use one of the refs. Hidden elements still work as targets by their text: `click "Papa Johns Pizza"`. Run `fastb look` only when you must read the hidden part.
+
 ## Steps
 
 One step per line. Values need no quotes. Labels and names go in double quotes.
