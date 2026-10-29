@@ -76,3 +76,8 @@ A fast browser-execution engine for AI coding agents (Claude Code, Codex). The a
 - Decision A (2026-10-29, after the slowdown): NO PROOF after the final click is now LIKELY DONE (docs/plan.md phase 7b). Codex review 2 rounds, all fixed; 105 tests pass; `dist/` built 15:11. Commit message: `.fastb/commit-msg.txt`.
   - Codex r1 (started 15:03:47) ran with mixed code: dist was rebuilt at 15:03, 15:08 and 15:11 during it (each task starts a new engine). The later builds only change edge cases.
   - Queued: `phase8-final2.sh` waits for `results/final-codex-r1.jsonl`, then fastb x3 with the new code -> `results/final2-fastb-rN.jsonl`, log `results/phase8-final2.log`.
+- Codex + fastb r1 (mixed code, see above): 18/22, median 69.2 s, total 1631 s, 212 turns (old Codex r1: 16/22).
+- fastb with LIKELY DONE (final2, 3 runs, done 16:36): 18/22, 19/22, 19/22; median 49.4 / 50.7 / 48.4 s; total 1142 / 1241 / 1199 s; 243 / 232 / 243 turns; $3.56 / $3.49 / $3.54. NO PROOF loops gone (1, 0, 0 NO PROOF answers; 4-6 LIKELY DONE per run).
+  - Against the headless baseline (r2, r3 mean: 17.5/22, 1517 s, 620 turns, $5.08): 1.27x faster in total time, 2.6x fewer turns, 31% cheaper, +1 task.
+  - Lanes (first done code, 3 runs): 18-19/22, about 1000 s, about 150 turns, about $2.85: 1.5x faster, 4x fewer turns, 44% cheaper.
+  - Not yet checked: whether the 14-20 NOT DONE answers per run are all real catches.
