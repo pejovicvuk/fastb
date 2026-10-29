@@ -6,14 +6,18 @@
 
 import { chatJson } from "../model/meta.ts";
 import { assertRemoteCheck, formatEvidence, redactEvidence, redactText, safeTask, secretValues, type Evidence } from "./commit.ts";
+import { riskyWord } from "../chunk/safety.ts";
 import type { Step, Target } from "../chunk/parse.ts";
 
 export type DoneStatus = "done" | "not_done" | "no_proof";
+// What the agent is told. "likely_done": no proof on this page, but the final click ran.
+export type DoneOutcome = DoneStatus | "likely_done";
 
 export interface DoneVerdict {
   status: DoneStatus;
   reason: string;
   items?: { need: string; proof: string; met: boolean }[];
+  strict?: boolean; // the model's own list has an unmet item: never upgraded to "likely done"
 }
 
 // One log line per step that ran, built from the parsed step (never the raw chunk text:
@@ -105,8 +109,37 @@ export async function doneCheck(task: string, actions: string[], evidence: Evide
   const status: DoneStatus = ["done", "not_done", "no_proof"].includes(r.value.status) ? r.value.status : "no_proof";
   // "done" needs every listed item met; the model's own list overrules a hasty verdict.
   const unmet = (r.value.items ?? []).filter((i) => !i.met);
-  if (status === "done" && unmet.length) return { status: "no_proof", reason: oneLine(`no proof of: ${unmet.map((i) => i.need).join("; ")}`), ms: r.ms };
+  if (status === "done" && unmet.length) return { status: "no_proof", reason: oneLine(`no proof of: ${unmet.map((i) => i.need).join("; ")}`), strict: true, ms: r.ms };
   return { status, reason: oneLine(r.value.reason), ms: r.ms };
+}
+
+// The final action word of the last click on a final control (send, pay, place order...)
+// in the log, or null. Only click lines count, and only the label fastb read from the page
+// (the last "[clicked: X]"). Words that also name a step on the way (checkout, book, post,
+// remove) do not count. A form step after the click means the click opened a form: no final.
+const NOT_FINAL = new Set(["checkout", "check out", "book", "post", "remove"]);
+const FORM_STEP = /^(fill|type|select|check|uncheck) /;
+
+export function finalClick(actions: string[]): string | null {
+  for (const a of [...actions].reverse()) {
+    if (FORM_STEP.test(a)) return null;
+    const at = a.lastIndexOf("  [clicked: ");
+    if (!a.startsWith("click ") || at < 0 || !a.endsWith("]")) continue;
+    const word = riskyWord(a.slice(at + 12, -1));
+    if (word && !NOT_FINAL.has(word)) return word;
+  }
+  return null;
+}
+
+// NO PROOF after the final click sent agents to look for proof pages that many sites do not
+// have (bench 2026-10-29: 2 to 5 extra calls per task). The model saw no error (that is
+// "not_done"), so after a final click the answer is "likely done", not a search order.
+// The line names only the action word (from a fixed list), never the page label: it may hold a value.
+export function doneOutcome(v: DoneVerdict, actions: string[]): { status: DoneOutcome; line: string } {
+  const final = v.status === "no_proof" && !v.strict ? finalClick(actions) : null;
+  if (!final) return { status: v.status, line: doneLine(v) };
+  const missing = v.reason ? `; this page does not show: ${v.reason}` : "";
+  return { status: "likely_done", line: `LIKELY DONE: a "${final}" click ran and no error shows${missing}. Answer DONE unless you see a problem. Do not search other pages for proof` };
 }
 
 const oneLine = (s: string) => (s || "").replace(/\s+/g, " ").trim().replace(/[.\s]+$/, "").slice(0, 200);
@@ -115,13 +148,14 @@ const oneLine = (s: string) => (s || "").replace(/\s+/g, " ").trim().replace(/[.
 export function doneLine(v: DoneVerdict): string {
   if (v.status === "done") return `DONE: ${v.reason || "the page shows the task is done"}`;
   if (v.status === "not_done") return `NOT DONE: ${v.reason || "the task is not finished"}. Fix it, then run fastb done again`;
-  return `NO PROOF: ${v.reason || "this page does not show the result"}. Open the page that shows the result, then run fastb done again`;
+  return `NO PROOF: ${v.reason || "this page does not show the result"}. If a link on this page opens the result (Sent, Orders, Bookings), open it once and run fastb done again. If not, decide yourself`;
 }
 
 // One line per lane, after a first line with the counts.
-export function lanesDoneText(rows: { name: string; line: string; status?: DoneStatus }[], ms: number): string {
-  const count = (s: DoneStatus) => rows.filter((r) => r.status === s).length;
+export function lanesDoneText(rows: { name: string; line: string; status?: DoneOutcome }[], ms: number): string {
+  const count = (s: DoneOutcome) => rows.filter((r) => r.status === s).length;
   const other = rows.filter((r) => !r.status).length;
-  const head = `done check (${(ms / 1000).toFixed(1)}s): ${count("done")} done, ${count("not_done")} not done, ${count("no_proof")} no proof${other ? `, ${other} not checked` : ""}`;
+  const likely = count("likely_done");
+  const head = `done check (${(ms / 1000).toFixed(1)}s): ${count("done")} done${likely ? `, ${likely} likely done` : ""}, ${count("not_done")} not done, ${count("no_proof")} no proof${other ? `, ${other} not checked` : ""}`;
   return [head, ...rows.map((r) => `[${r.name}] ${r.line}`)].join("\n");
 }

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { donePrompt, doneLine, keepActions, lanesDoneText, logLine, MAX_ACTIONS } from "./done.ts";
+import { donePrompt, doneLine, doneOutcome, finalClick, keepActions, lanesDoneText, logLine, MAX_ACTIONS } from "./done.ts";
 import { parseChunk } from "../chunk/parse.ts";
 
 test("the log is built from parsed steps: settings dropped, clicks named, secret values hidden", () => {
@@ -36,7 +36,30 @@ test("no steps is said plainly", () => {
 test("each verdict becomes one line that tells the agent what to do", () => {
   assert.equal(doneLine({ status: "done", reason: "Send was clicked, inbox shows no draft" }), "DONE: Send was clicked, inbox shows no draft");
   assert.equal(doneLine({ status: "not_done", reason: "the mail was written but never sent" }), "NOT DONE: the mail was written but never sent. Fix it, then run fastb done again");
-  assert.match(doneLine({ status: "no_proof", reason: "" }), /^NO PROOF: this page does not show the result\. Open the page/);
+  assert.match(doneLine({ status: "no_proof", reason: "" }), /^NO PROOF: this page does not show the result\. If a link on this page opens the result/);
+});
+
+test("the final click: only click lines with a page label, final words only, no form step after it", () => {
+  assert.equal(finalClick(['click @e1  [clicked: Checkout | Checkout $26.07]']), null);
+  assert.equal(finalClick(['click @e1  [clicked: Add to cart]', 'click @e2  [clicked: Place Order]', 'goto https://x.com/']), "place order");
+  assert.equal(finalClick(['click @e1  [clicked: Delete]', 'click @e9  [clicked: Close]']), "delete");
+  assert.equal(finalClick(['click @e1  [clicked: Book]']), null); // often opens the booking form
+  assert.equal(finalClick(['click @e1  [clicked: Confirm booking]', 'fill "Phone" = 555']), null); // a form after it: not final
+  assert.equal(finalClick(['fill "Body" = Notes  [clicked: Send]']), null); // a typed value is not a click
+  assert.equal(finalClick(['click "x  [clicked: Send]"']), null); // no label from the page
+  assert.equal(finalClick([]), null);
+});
+
+test("no proof after the final click is likely done; a rejection or no final click stays", () => {
+  const log = ['click @e2  [clicked: Pay from account 123456789]'];
+  const likely = doneOutcome({ status: "no_proof", reason: "need order history page" }, log);
+  assert.equal(likely.status, "likely_done");
+  assert.equal(likely.line, 'LIKELY DONE: a "pay" click ran and no error shows; this page does not show: need order history page. Answer DONE unless you see a problem. Do not search other pages for proof');
+  assert.doesNotMatch(likely.line, /123456789/);
+  assert.equal(doneOutcome({ status: "no_proof", reason: "no proof of: payment", strict: true }, log).status, "no_proof"); // the model's own unmet item
+  assert.equal(doneOutcome({ status: "no_proof", reason: "x" }, ['click @e1  [clicked: Next]']).status, "no_proof");
+  assert.equal(doneOutcome({ status: "not_done", reason: "phone invalid" }, log).status, "not_done"); // a clear miss stays a miss
+  assert.equal(doneOutcome({ status: "done", reason: "ok" }, log).line, "DONE: ok");
 });
 
 test("lanes: a count line, then one line per lane", () => {
@@ -45,8 +68,9 @@ test("lanes: a count line, then one line per lane", () => {
       { name: "a", line: "DONE: booked", status: "done" },
       { name: "b", line: "NOT DONE: date is July 19", status: "not_done" },
       { name: "c", line: "done: no task" },
+      { name: "d", line: "LIKELY DONE: x", status: "likely_done" },
     ],
     1500,
   );
-  assert.equal(text, ["done check (1.5s): 1 done, 1 not done, 0 no proof, 1 not checked", "[a] DONE: booked", "[b] NOT DONE: date is July 19", "[c] done: no task"].join("\n"));
+  assert.equal(text, ["done check (1.5s): 1 done, 1 likely done, 1 not done, 0 no proof, 1 not checked", "[a] DONE: booked", "[b] NOT DONE: date is July 19", "[c] done: no task", "[d] LIKELY DONE: x"].join("\n"));
 });

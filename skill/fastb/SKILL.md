@@ -64,7 +64,8 @@ One step per line. Values need no quotes. Labels and names go in double quotes.
 5. **Before you answer DONE, run `fastb done`.** A checker compares the task with the steps that really ran and the page now. It answers:
    - `DONE: ...`: answer DONE.
    - `NOT DONE: <what is missing>`: do the missing part (for example, click Send), then run `fastb done` again.
-   - `NO PROOF: <page>`: open the page that shows the result (Sent folder, order list, booking page), then run `fastb done` again.
+   - `LIKELY DONE: ...`: the final click ran and no error shows. Answer DONE unless you see a problem. Do not search for a proof page.
+   - `NO PROOF: ...`: if a link on the page opens the result (Sent, Orders, Bookings), open it once and run `fastb done` again. If not, decide yourself.
    - If it says NOT DONE about a send / pay / book click that already ran, open the page that shows it before you click again: never send or pay twice.
    - After two checks that you are sure are wrong, or when the check is off or failed, decide yourself.
 

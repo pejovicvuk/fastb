@@ -26,7 +26,8 @@ A fast browser-execution engine for AI coding agents (Claude Code, Codex). The a
 - Stopped in the middle: Claude Code + fastb r1 after 5 tasks (`results/fastb-r1-partial.jsonl`). Not started: fastb r2, r3; lanes x3; baseline x2.
 - Decision A taken (2026-10-29): "proof of done" built (`fastb done`, `fastb lanes done`; docs/plan.md phase 7b). Live test on gomail-3 passes. Commit check flakes fixed on the way. Codex review: 4 rounds, all findings fixed. 103 tests pass, `dist/` is built. Commit message: `.fastb/commit-msg.txt`.
 - Bench harnesses now start the test Chrome headless (Vuk: visible windows took focus). Baseline r2 + r3 run headless (`phase8-baseline.sh`); baseline r1 was headed. One headed r2 task was discarded (`baseline-r2-headed-discard.jsonl`).
-- Running (nohup, survives the session): `~/Desktop/fastb-bench/phase8-final.sh`, log `results/phase8-final.log`. Waits for baseline r3, then fastb x3, lanes x3, Codex x1 with the final code. Results: `results/final-*.jsonl`. Baseline r3 first try lost the network (`baseline-r3-netdrop-discard.jsonl`), rerun in full.
+- Baseline done, 3 runs (r1 headed, r2 + r3 headless): 17/22, 17/22, 18/22; median 75.7 / 56.1 / 65.9 s; total 2301 / 1436 / 1597 s.
+- Final runs STOPPED by Vuk (2026-10-29, 09:53) after 1 task: `results/final-fastb-r1-partial.jsonl` (gomail-3 passed, agent used `fastb done`). Do not start any benchmark until Vuk says so. To start: `cd ~/Desktop/fastb-bench && nohup ./phase8-final.sh > results/phase8-final.log 2>&1 < /dev/null &` (fastb x3, lanes x3, Codex x1; results `results/final-*.jsonl`).
 - Drafts waiting for the final numbers: `README.md` (rewritten, with a Mermaid diagram), `docs/video-script.md`, `LICENSE` (MIT).
 
 ## Next steps
@@ -62,3 +63,16 @@ A fast browser-execution engine for AI coding agents (Claude Code, Codex). The a
 - I commit and push. You write commit messages to a file. Outward text (README, video script): no em dashes.
 - Keep all hackathon notes I send in `docs/`.
 - Report results faithfully; speed claims only from benchmark runs.
+- Final runs restarted by Vuk's "resume" (2026-10-29, 12:58). At 14:58 fastb x3 and lanes r1, r2 done; lanes r3 and Codex r1 still run.
+  - fastb r1/r2/r3: 18/22 each (same 4 fails: fly-unified-9, gomail-8, staynb-9, topwork-1; gomail-3 now passes in all 3). Median 56.8 / 63.0 / 55.7 s, total 1468 / 1359 / 1287 s, 267 / 269 / 256 turns, $3.90 / $4.03 / $3.79.
+  - Run 4 (old code) was 17/22, median 35.6 s, total 890 s. The new code is SLOWER: fastb time per run 521 s vs 266 s, Claude API time about 900 s vs 601 s. Today's fastb is about as fast as today's baseline (r2 56.0 s, r3 64.2 s). Cause not yet found.
+  - lanes r1: 19/22, 1032 s, 139 turns, $2.82. r2: 18/22, 992 s, 164 turns, $2.90. Old lanes: 18/22, 693 s.
+- Slowdown cause (read from the agent transcripts of final fastb r1):
+  - `fastb done` ran 43 times in 22 tasks, about 5 s each (Meta call): about 215 s of the 255 s extra fastb time.
+  - NO PROOF loops: on DashDish (no order history page) and StayNB the checker asks for a proof page that does not exist; the agent searches (404 /orders, "Order History"...) for 2 to 5 extra calls.
+  - Real catches: networkin-5 (Connect not sent yet), opendining-3/4/5 (phone invalid, booking not confirmed), zilloft-6 (wrong city), gomail-3 (pass now).
+  - False DONEs left: gomail-8, topwork-1, staynb-9 (checker said DONE, REAL says fail). fly-unified-9 never ran `fastb done`.
+- lanes r3: 18/22, 1008 s, 154 turns, $2.87.
+- Decision A (2026-10-29, after the slowdown): NO PROOF after the final click is now LIKELY DONE (docs/plan.md phase 7b). Codex review 2 rounds, all fixed; 105 tests pass; `dist/` built 15:11. Commit message: `.fastb/commit-msg.txt`.
+  - Codex r1 (started 15:03:47) ran with mixed code: dist was rebuilt at 15:03, 15:08 and 15:11 during it (each task starts a new engine). The later builds only change edge cases.
+  - Queued: `phase8-final2.sh` waits for `results/final-codex-r1.jsonl`, then fastb x3 with the new code -> `results/final2-fastb-rN.jsonl`, log `results/phase8-final2.log`.

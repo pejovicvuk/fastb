@@ -16,7 +16,7 @@ import { runChunk, type RunHooks, type RunResult } from "../chunk/run.ts";
 import type { ParsedStep } from "../chunk/parse.ts";
 import { commitCheck, readEvidence, REMOTE_CHECK_FILE, remoteCheckEnabled, runCommitCheck } from "../check/commit.ts";
 import { laneReport, type LaneOutcome } from "../check/report.ts";
-import { doneCheck, doneLine, keepActions, lanesDoneText, logLine, type DoneStatus } from "../check/done.ts";
+import { doneCheck, doneOutcome, keepActions, lanesDoneText, logLine, type DoneOutcome } from "../check/done.ts";
 import { startWatch, type WatchLane } from "../watch/server.ts";
 import { safeStep } from "../watch/logic.ts";
 import { combineLanes, parseLanes } from "../chunk/lanes.ts";
@@ -72,7 +72,11 @@ const finished = new Set<string>();
 function recordActions(key: string, steps: ParsedStep[], done: number, track: { labels: Map<number, string>; secretSteps: Set<number> }): void {
   const lines = steps.slice(0, done).map((s, i) => logLine(s.step, track.labels.get(i), track.secretSteps.has(i)));
   actions.set(key, keepActions(actions.get(key) ?? [], lines));
+  if (sinceTask.has(key)) sinceTask.set(key, sinceTask.get(key)! + lines.filter(Boolean).length);
 }
+// After "fastb done <other task>" the log is kept for the model, but only the steps since
+// then may count as the new task's final click.
+const sinceTask = new Map<string, number>();
 // Commit checks run in this command, for the stats line, and notes for the agent.
 let checks = { n: 0, ms: 0, stopped: 0 };
 let notes = new Set<string>();
@@ -82,7 +86,10 @@ function hooksFor(name: string | undefined, steps: ParsedStep[]): { hooks: RunHo
   const key = name ?? "";
   const taskStep = steps.find((s) => s.step.op === "task")?.step as { text: string } | undefined;
   if (taskStep) {
-    if (tasks.get(key) !== taskStep.text || finished.has(key)) actions.delete(key); // a new task starts a new log
+    if (tasks.get(key) !== taskStep.text || finished.has(key)) {
+      actions.delete(key); // a new task starts a new log
+      sinceTask.delete(key);
+    }
     finished.delete(key);
     tasks.set(key, taskStep.text);
   }
@@ -188,6 +195,7 @@ async function handle(req: Request): Promise<Handled> {
         for (const name of session.laneNames()) secretsByLane.delete(name);
         for (const name of session.laneNames()) tasks.delete(name);
         for (const name of session.laneNames()) actions.delete(name);
+        for (const name of session.laneNames()) sinceTask.delete(name);
         for (const name of session.laneNames()) finished.delete(name);
         return ok(`lanes: closed ${await session.closeLanes()}`);
       }
@@ -275,11 +283,14 @@ async function handle(req: Request): Promise<Handled> {
       const lane = typeof req.flags.lane === "string" ? req.flags.lane : undefined;
       const key = lane ?? "";
       const given = req.args.join(" ").trim();
-      if (given && tasks.get(key) !== given) tasks.set(key, given);
+      if (given && tasks.get(key) !== given) {
+        if (tasks.has(key)) sinceTask.set(key, 0); // a first task keeps the clicks that ran
+        tasks.set(key, given);
+      }
       if (!remoteCheckEnabled()) return fail(doneOff());
       if (lane && !session.laneNames().includes(lane)) return fail(`done: no lane ${lane}`);
       const r = await checkDone(key, target(req));
-      return { ok: r.status === "done", text: r.text };
+      return { ok: r.status === "done" || r.status === "likely_done", text: r.text };
     }
     case "watch": {
       if (req.args[0] === "stop") {
@@ -304,17 +315,21 @@ async function handle(req: Request): Promise<Handled> {
 const doneOff = () => `done check is off: it sends page facts to the Meta API. A person turns it on by writing "on" to ${REMOTE_CHECK_FILE}`;
 
 // One done check for a lane (or the main page, key ""): task, steps that ran, page now.
-async function checkDone(key: string, getPage: () => Promise<Page>): Promise<{ text: string; status?: DoneStatus }> {
+async function checkDone(key: string, getPage: () => Promise<Page>): Promise<{ text: string; status?: DoneOutcome }> {
   const task = tasks.get(key);
   if (!task) return { text: 'done: no task. Put the line "task <the task, in the user\'s words>" in a run, or run: fastb done <the task>' };
   try {
     const page = await getPage();
     await settle(page, { maxMs: 3000 });
     const evidence = await readEvidence(page);
-    const v = await doneCheck(task, actions.get(key) ?? [], evidence, [...(secretsByLane.get(key) ?? [])]);
-    checks = { n: checks.n + 1, ms: checks.ms + v.ms, stopped: checks.stopped + (v.status === "done" ? 0 : 1) };
-    if (v.status === "done") finished.add(key);
-    return { text: doneLine(v), status: v.status };
+    const log = actions.get(key) ?? [];
+    const v = await doneCheck(task, log, evidence, [...(secretsByLane.get(key) ?? [])]);
+    const since = sinceTask.get(key);
+    const out = doneOutcome(v, since === undefined ? log : log.slice(Math.max(0, log.length - since)));
+    const passed = out.status === "done" || out.status === "likely_done";
+    checks = { n: checks.n + 1, ms: checks.ms + v.ms, stopped: checks.stopped + (passed ? 0 : 1) };
+    if (passed) finished.add(key);
+    return { text: out.line, status: out.status };
   } catch (err) {
     return { text: `done check failed (${firstLine(err)}); decide yourself from the page` };
   }
