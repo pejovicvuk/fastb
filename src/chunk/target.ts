@@ -1,5 +1,6 @@
 import type { Locator, Page } from "playwright-core";
 import type { Target } from "./parse.ts";
+import { riskyWord } from "./safety.ts";
 
 export type Purpose = "click" | "input" | "select" | "check";
 
@@ -74,7 +75,8 @@ function escapeRegExp(s: string): string {
 
 // Resolves a target to exactly one visible element, retrying until `timeoutMs`
 // because the element may still be rendering after the previous step.
-export async function resolveTarget(page: Page, t: Target, purpose: Purpose, timeoutMs = 5000): Promise<Resolved> {
+// `refLine`: the page line the agent last saw for a ref, e.g. `@e165 textbox "Depart"`.
+export async function resolveTarget(page: Page, t: Target, purpose: Purpose, timeoutMs = 5000, refLine?: (ref: string) => string | undefined): Promise<Resolved> {
   if (t.kind === "ref") {
     const loc = page.getByRef(t.ref);
     try {
@@ -82,7 +84,7 @@ export async function resolveTarget(page: Page, t: Target, purpose: Purpose, tim
       await loc.waitFor({ state: "attached", timeout: Math.min(timeoutMs, 500) });
       return { ok: true, locator: loc };
     } catch {
-      return { ok: false, reason: `ref @${t.ref} not found (refs change after the page updates: run look again)` };
+      return refAgain(page, t.ref, refLine?.(t.ref));
     }
   }
   const deadline = Date.now() + timeoutMs;
@@ -96,11 +98,92 @@ export async function resolveTarget(page: Page, t: Target, purpose: Purpose, tim
         continue;
       }
       if (n === 1) return { ok: true, locator: visible };
+      const one = await pickOne(visible, n, t.text, purpose);
+      if (one >= 0) return { ok: true, locator: visible.nth(one) };
       return { ok: false, reason: `${n} elements match`, choices: await describeChoices(visible, n) };
     }
     if (Date.now() >= deadline) return { ok: false, reason: `not found within ${Math.round(timeoutMs / 1000)}s` };
     await page.waitForTimeout(100);
   }
+}
+
+// A page update (a React re-render) can replace an element with an equal one that has a
+// new ref. The agent saw its role and name: when exactly one visible element has them
+// now, that is the element.
+async function refAgain(page: Page, ref: string, line: string | undefined): Promise<Resolved> {
+  const gone: Resolved = { ok: false, reason: `ref @${ref} not found (refs change after the page updates: run look again)` };
+  const m = line && /^@\w+ ([a-z]+) ("(?:[^"\\]|\\.)*")/.exec(line.trimStart());
+  if (!m) return gone;
+  let name: string;
+  try {
+    name = JSON.parse(m[2]) as string;
+  } catch {
+    return gone;
+  }
+  if (!name || name.endsWith("…")) return gone; // a cut name is not the whole name
+  // A delete / send / pay control is never guessed: the one left may be another row's.
+  if (riskyWord(name)) return gone;
+  const again = page.getByRole(m[1] as AriaRole, { name, exact: true }).filter({ visible: true });
+  const deadline = Date.now() + 1000;
+  for (;;) {
+    const n = await again.count().catch(() => 0);
+    if (n === 1) return { ok: true, locator: again };
+    if (n > 1 || Date.now() >= deadline) {
+      const what = `${m[1]} "${name.slice(0, 60)}"`;
+      return { ok: false, reason: `ref @${ref} not found: ${n ? `${n} elements are ${what} now` : `no ${what} is on the page now`} (refs change after the page updates: run look again)` };
+    }
+    await page.waitForTimeout(100);
+  }
+}
+
+// Several matches where only one can be meant: the only real text field (a fill whose
+// label also names its box), the only whole-word match ("Male", not "Female"), or the
+// first of identical copies (a carousel shows each card again). -1: ask the agent.
+async function pickOne(loc: Locator, n: number, name: string, purpose: Purpose): Promise<number> {
+  if (n > 20) return -1;
+  const items = await loc
+    .evaluateAll((els) =>
+      els.map((node) => {
+        const el = node as HTMLElement;
+        const own = (el.innerText || el.getAttribute("aria-label") || (el as HTMLInputElement).value || el.textContent || "").replace(/\s+/g, " ").trim();
+        // Every name it may be known by: a whole-word match in any of them counts.
+        const root = el.getRootNode() as Document | ShadowRoot;
+        const labelled = (el.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean)
+          .map((id) => root.getElementById?.(id))
+          .map((n) => `${n?.getAttribute("aria-label") ?? ""} ${n?.textContent ?? ""}`.trim());
+        const names = [own, el.getAttribute("aria-label"), el.getAttribute("title"), (el as HTMLInputElement).value, labelled.join(" ")].filter((x): x is string => Boolean(x));
+        // Its card: the first box around it with some more words, but never one that
+        // holds another match (then two rows of one list would look the same).
+        let card = el;
+        while (card.parentElement && (card.textContent ?? "").trim().length < own.length + 15 && !els.some((o) => o !== el && card.parentElement!.contains(o))) {
+          card = card.parentElement;
+        }
+        const field = (el.matches("input, textarea, select") && !(el as HTMLInputElement).readOnly) || el.isContentEditable;
+        const control = el.matches('button, a, input, select, textarea, summary, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [role="option"], [role="checkbox"], [role="radio"], [role="switch"]');
+        return { field, own, names, control, href: el.closest("a[href]")?.getAttribute("href") ?? "", card: (card.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 300), role: el.getAttribute("role") || el.tagName };
+      }),
+    )
+    .catch(() => null);
+  if (!items) return -1;
+  type Item = (typeof items)[number];
+  const only = (ok: (i: Item) => boolean) => {
+    const hits = items.flatMap((i, k) => (ok(i) ? [k] : []));
+    return hits.length === 1 ? hits[0] : -1;
+  };
+  if (purpose === "input" || purpose === "select") {
+    const k = only((i) => i.field);
+    if (k >= 0) return k;
+  }
+  const word = new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(name)}($|[^\\p{L}\\p{N}])`, "iu");
+  const k = only((i) => i.names.some((x) => word.test(x)));
+  if (k >= 0) return k;
+  const same = (a: Item) => a.role === items[0].role && a.own === items[0].own && a.card === items[0].card;
+  // Copies of one item: the matches are the item's name (a heading or text, not a
+  // button: "Open" in two rows is two records), or all open the same link.
+  const first = items[0];
+  const copies = first.own && items.every(same) &&
+    ((/^(\/|https?:)/.test(first.href) && items.every((i) => i.href === first.href)) || items.every((i) => !i.control && i.own.toLowerCase() === name.toLowerCase()));
+  return copies ? 0 : -1;
 }
 
 // One line per match with its role, name and nearby text, so the agent can pick

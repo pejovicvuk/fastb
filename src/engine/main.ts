@@ -7,7 +7,7 @@ import type { Request, Response } from "../protocol.ts";
 import { Session } from "../browser/session.ts";
 import { settle } from "../browser/settle.ts";
 import { look, pageHeader } from "../snapshot/look.ts";
-import { forgetView, runReport, showChanges, showPage } from "./view.ts";
+import { forgetView, runReport, seenLine, showChanges, showPage } from "./view.ts";
 import { appendStat, type StatRow } from "./stats.ts";
 import { lockPort, takeLock } from "./lock.ts";
 import { withScheme } from "../browser/url.ts";
@@ -77,6 +77,22 @@ function recordActions(key: string, steps: ParsedStep[], done: number, track: { 
 // After "fastb done <other task>" the log is kept for the model, but only the steps since
 // then may count as the new task's final click.
 const sinceTask = new Map<string, number>();
+// Lanes whose task had a run with the line "allow": later runs of the same task are
+// allowed too (agents forget the line in later runs). A new task needs its own "allow".
+const allowed = new Set<string>();
+// Lanes with a run being set up or running now (in this command).
+const running = new Set<string>();
+// A closed lane leaves nothing behind: a new lane with the same name starts clean.
+// A lane that closes because its own run restarts the browser (new options) keeps the
+// task that run just set, so its commit check still runs; its "allow" from before goes.
+session.onLanesClosed = (names) => {
+  for (const name of names) {
+    for (const m of [secretsByLane, actions, sinceTask]) m.delete(name);
+    if (!running.has(name)) tasks.delete(name);
+    finished.delete(name);
+    allowed.delete(name);
+  }
+};
 // Commit checks run in this command, for the stats line, and notes for the agent.
 let checks = { n: 0, ms: 0, stopped: 0 };
 let notes = new Set<string>();
@@ -89,10 +105,12 @@ function hooksFor(name: string | undefined, steps: ParsedStep[]): { hooks: RunHo
     if (tasks.get(key) !== taskStep.text || finished.has(key)) {
       actions.delete(key); // a new task starts a new log
       sinceTask.delete(key);
+      allowed.delete(key);
     }
     finished.delete(key);
     tasks.set(key, taskStep.text);
   }
+  if (tasks.has(key) && steps.some((s) => s.step.op === "allow")) allowed.add(key);
   const check: RunHooks["check"] = async (page, label) => {
     const task = tasks.get(key);
     if (!task) return null;
@@ -111,6 +129,7 @@ function hooksFor(name: string | undefined, steps: ParsedStep[]): { hooks: RunHo
     return out.kind === "stop" ? { reason: out.reason, model: out.model } : null;
   };
   laneStatus.set(key, { state: "running" });
+  running.add(key);
   const labels = new Map<number, string>();
   const secretSteps = new Set<number>();
   return {
@@ -119,13 +138,18 @@ function hooksFor(name: string | undefined, steps: ParsedStep[]): { hooks: RunHo
     hooks: {
       onClickLabel: (i, label) => labels.set(i, label),
       check,
+      allowed: () => allowed.has(key) && tasks.has(key),
+      refLine: seenLine,
       onSecret: (value, i) => {
         secretsByLane.set(key, (secretsByLane.get(key) ?? new Set()).add(value));
         secretSteps.add(i);
       },
       flash: Boolean(watcher),
       onStep: (_i, source) => laneStatus.set(key, { state: "running", step: source }) },
-    end: (ok) => laneStatus.set(key, { state: ok ? "ok" : "stopped", step: laneStatus.get(key)?.step }),
+    end: (ok) => {
+      running.delete(key);
+      laneStatus.set(key, { state: ok ? "ok" : "stopped", step: laneStatus.get(key)?.step });
+    },
   };
 }
 
@@ -193,11 +217,6 @@ async function handle(req: Request): Promise<Handled> {
       if (input === "close") {
         laneStatus.clear();
         laneOutcomes.clear();
-        for (const name of session.laneNames()) secretsByLane.delete(name);
-        for (const name of session.laneNames()) tasks.delete(name);
-        for (const name of session.laneNames()) actions.delete(name);
-        for (const name of session.laneNames()) sinceTask.delete(name);
-        for (const name of session.laneNames()) finished.delete(name);
         return ok(`lanes: closed ${await session.closeLanes()}`);
       }
       if (!input || input === "list") return ok(session.laneNames().length ? `lanes: ${session.laneNames().join(" ")}` : "lanes: none open");
@@ -286,6 +305,7 @@ async function handle(req: Request): Promise<Handled> {
       const given = req.args.join(" ").trim();
       if (given && tasks.get(key) !== given) {
         if (tasks.has(key)) sinceTask.set(key, 0); // a first task keeps the clicks that ran
+        allowed.delete(key);
         tasks.set(key, given);
       }
       if (!remoteCheckEnabled()) return fail(doneOff());

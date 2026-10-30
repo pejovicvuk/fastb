@@ -4,6 +4,7 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import { parseChunk } from "./parse.ts";
 import { runChunk } from "./run.ts";
 import { changedFields, readEvidence } from "../check/commit.ts";
+import { seenLine, showPage } from "../engine/view.ts";
 
 // Runs chunks in a real headless Chrome. Skipped when Chrome is not installed.
 let browser: Browser | undefined;
@@ -142,7 +143,7 @@ test("a failed expect value on a password field never prints the value", async (
 
 test("failures carry a fixed code; page text stays in the local reason only", async (t) => {
   if (!browser) return t.skip("Chrome not installed");
-  await page.setContent(`<div style="position:fixed;inset:0;background:#fff">API secret: smallSecret</div><button>Go</button>`);
+  await page.setContent(`<div role="dialog" style="position:fixed;inset:0;background:#fff">API secret: smallSecret</div><button>Go</button>`);
   let r = await run('click "Go"');
   assert.equal(r.failure?.code, "covered");
   r = await run('expect text "Recovery phrase: amber birch cedar"');
@@ -205,4 +206,187 @@ test("a page reading keeps messages apart by element, so one that goes away is n
   // A large element or one with fields is page content, not a message.
   await page.setContent(`<div role="status">Amount <input aria-label="Amount" value="10"></div>`);
   assert.deepEqual((await readEvidence(page)).transient, []);
+});
+
+test("an earlier allow of the same task lets a later run click", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  await page.setContent(`<button onclick="document.title='sent'">Send</button>`);
+  let r = await runChunk(async () => page, parseChunk(`click "Send"`), { allowed: () => false });
+  assert.match(r.failure?.reason ?? "", /safety stop/);
+  r = await runChunk(async () => page, parseChunk(`click "Send"`), { allowed: () => true });
+  assert.equal(r.ok, true);
+  assert.equal(await page.title(), "sent");
+});
+
+test("a ref lost in a re-render is found again by its role and name", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  await page.setContent(`<div id="box"><button onclick="document.title='go'">Depart</button><button>Other</button></div>`);
+  const ref = await refOf(page, 'button "Depart"');
+  await page.evaluate(() => {
+    const box = document.getElementById("box")!;
+    box.innerHTML = box.innerHTML; // new elements, same look
+  });
+  const lines = new Map([[ref, `  @${ref} button "Depart"`]]);
+  const refLine = (_p: Page, r: string) => lines.get(r);
+  let res = await runChunk(async () => page, parseChunk(`click @${ref}`), { refLine });
+  assert.equal(res.ok, true, res.failure?.reason);
+  assert.equal(await page.title(), "go");
+
+  // Gone for good: the reason says what the agent saw is not there.
+  await page.setContent(`<button>Other</button>`);
+  res = await runChunk(async () => page, parseChunk(`click @${ref}`), { refLine });
+  assert.match(res.failure?.reason ?? "", /no button "Depart" is on the page now/);
+});
+
+test("several matches: the only field, the only whole word, or the first of equal copies", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  await page.setContent(`
+    <div aria-label="Card number"><input aria-label="Card number"></div>
+    <div role="listbox"><div role="option" onclick="document.title='M'">Male (M)</div><div role="option" onclick="document.title='F'">Female (F)</div></div>
+    <section>Featured<div><h6 onclick="document.title='s1'">Souvla</h6>4.8 • 0.3 mi • 28 min</div><div>Taco Bell</div></section>
+    <section>Near you<div><h6 onclick="document.title='s2'">Souvla</h6>4.8 • 0.3 mi • 28 min</div></section>
+    <div><p>Rome <button onclick="document.title='r'">Book</button></p><p>Paris <button>Book</button></p></div>`);
+  let r = await run(`fill "Card number" = 4242`);
+  assert.equal(r.ok, true, r.failure?.reason);
+  assert.equal(await page.locator("input").inputValue(), "4242");
+  r = await run(`click "Male"`);
+  assert.equal(r.ok, true, r.failure?.reason);
+  assert.equal(await page.title(), "M");
+  r = await run(`click "Souvla"`);
+  assert.equal(r.ok, true, r.failure?.reason);
+  assert.equal(await page.title(), "s1");
+  // Two different rows: the agent picks.
+  r = await run(`allow\nclick "Book"`);
+  assert.match(r.failure?.reason ?? "", /2 elements match/);
+});
+
+test("a covered button is clicked by keyboard; a read-only field fails at once", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  await page.setContent(`
+    <button style="position:fixed;top:0;left:0" onclick="document.title='hit'">Next</button>
+    <div style="position:fixed;top:0;left:0;width:300px;height:100px;background:#fff">banner</div>
+    <label>Country <input readonly value="United States"></label>`);
+  let r = await run(`click "Next"`);
+  assert.equal(r.ok, true, r.failure?.reason);
+  assert.equal(await page.title(), "hit");
+  const started = Date.now();
+  r = await run(`fill "Country" = USA`);
+  assert.match(r.failure?.reason ?? "", /read-only and holds "United States"/);
+  assert.ok(Date.now() - started < 1500);
+});
+
+test("review: a covered click never presses Enter on another control or behind a dialog", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  // The target cannot take the focus: Enter would go to the focused Send button.
+  await page.setContent(`
+    <button id="send" onclick="document.title='sent'">Send</button>
+    <button style="position:fixed;top:0;left:0" disabled onclick="document.title='next'">Next</button>
+    <div style="position:fixed;top:0;left:0;width:300px;height:100px;background:#fff">banner</div>`);
+  await page.focus("#send");
+  let r = await run(`click "Next"`);
+  assert.equal(r.ok, false);
+  assert.equal(await page.title(), "");
+  // A backdrop beside an open dialog covers the page.
+  await page.setContent(`
+    <button style="position:fixed;top:0;left:0" onclick="document.title='next'">Next</button>
+    <div style="position:fixed;inset:0;background:#0008"></div>
+    <div role="dialog" aria-modal="true" style="position:fixed;top:200px;left:200px">Are you sure?</div>`);
+  r = await run(`click "Next"`);
+  assert.equal(r.failure?.code, "covered");
+  assert.equal(await page.title(), "");
+});
+
+test("review: a lost ref is not guessed when the agent saw two alike, or for a risky control", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  await page.setContent(`
+    <div id="a">Alice <button onclick="document.title='open alice'">Open</button></div>
+    <div id="b">Bob <button onclick="document.title='open bob'">Open</button></div>`);
+  await showPage(page);
+  const ref = await refOf(page, 'button "Open"');
+  await page.evaluate(() => document.getElementById("a")!.remove());
+  const refLine = seenLine;
+  let r = await runChunk(async () => page, parseChunk(`click @${ref}`), { refLine });
+  assert.equal(r.failure?.code, "ref-gone");
+  assert.equal(await page.title(), "");
+  // One "Delete" seen, re-rendered: a risky control is still not guessed.
+  await page.setContent(`<div id="box"><button>Delete</button></div>`);
+  await showPage(page);
+  const del = await refOf(page, 'button "Delete"');
+  await page.evaluate(() => {
+    const box = document.getElementById("box")!;
+    box.innerHTML = box.innerHTML;
+  });
+  r = await runChunk(async () => page, parseChunk(`allow\nclick @${del}`), { refLine });
+  assert.equal(r.failure?.code, "ref-gone");
+});
+
+test("review: equal action bars in two records are not copies; a read-only secret is not printed", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  await page.setContent(`
+    <section>Alice<div><button onclick="document.title='alice'">Open</button> Preview account details</div></section>
+    <section>Bob<div><button onclick="document.title='bob'">Open</button> Preview account details</div></section>
+    <label>Password <input type="password" readonly value="actualPassword7"></label>`);
+  let r = await run(`click "Open"`);
+  assert.match(r.failure?.reason ?? "", /2 elements match/);
+  assert.equal(await page.title(), "");
+  r = await run(`fill "Password" = other`);
+  assert.match(r.failure?.reason ?? "", /read-only/);
+  assert.equal(r.failure!.reason.includes("actualPassword7"), false);
+});
+
+test("review 2: no focus tricks, shadow dialogs, exact names, placeholder links, labelled secrets", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  // A focus handler that moves the focus to Send: the covered click must not send.
+  await page.setContent(`
+    <button id="send" onclick="document.title='sent'">Send</button>
+    <button id="next" style="position:fixed;top:0;left:0" onclick="document.title='next'">Next</button>
+    <div style="position:fixed;top:0;left:0;width:300px;height:100px;background:#fff">banner</div>
+    <script>document.getElementById("next").addEventListener("focus", () => queueMicrotask(() => document.getElementById("send").focus()));</script>`);
+  let r = await run(`click "Next"`);
+  assert.equal(r.ok, true, r.failure?.reason);
+  assert.equal(await page.title(), "next");
+  // A modal inside a shadow root.
+  await page.setContent(`<button style="position:fixed;top:0;left:0" onclick="document.title='behind'">Next</button><div id="host"></div>`);
+  await page.evaluate(() => {
+    const root = document.getElementById("host")!.attachShadow({ mode: "open" });
+    root.innerHTML = '<div style="position:fixed;inset:0;background:#0008"></div><div role="dialog" aria-modal="true" style="position:fixed;top:200px;left:200px">Sure?</div>';
+  });
+  r = await run(`click "Next"`);
+  assert.equal(r.failure?.code, "covered");
+  assert.equal(await page.title(), "");
+  // Both are named "Open"; placeholder links are not one item.
+  await page.setContent(`
+    <section>Alice <button aria-label="Open">Open</button></section>
+    <section>Bob <button aria-label="Open">View account</button></section>
+    <p><a href="#" onclick="document.title='a'">Read</a></p><p><a href="#" onclick="document.title='b'">Read</a></p>
+    <span id="tk">API token</span><input aria-labelledby="tk" readonly value="tok_live_123">`);
+  r = await run(`click "Open"`);
+  assert.match(r.failure?.reason ?? "", /2 elements match/);
+  r = await run(`click "Read"`);
+  assert.match(r.failure?.reason ?? "", /2 elements match/);
+  r = await run(`fill "API token" = x`);
+  assert.match(r.failure?.reason ?? "", /read-only/);
+  assert.equal(r.failure!.reason.includes("tok_live_123"), false);
+  assert.equal(await page.title(), "");
+});
+
+test("review 3: labelledby names, display-contents dialogs, labelled secrets", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  await page.setContent(`
+    <span id="o1">Open</span><span id="o2">Open</span>
+    <section>Alice <button aria-labelledby="o1">Open</button></section>
+    <section>Bob <button aria-labelledby="o2">View account</button></section>
+    <span id="lb" aria-label="API token">Key</span><input aria-labelledby="lb" readonly value="tok_live_9">`);
+  let r = await run(`click button "Open"`);
+  assert.match(r.failure?.reason ?? "", /2 elements match/);
+  r = await run(`fill textbox "API token" = x`);
+  assert.match(r.failure?.reason ?? "", /read-only/);
+  assert.equal(r.failure!.reason.includes("tok_live_9"), false);
+
+  await page.setContent(`
+    <button style="position:fixed;top:0;left:0" onclick="document.title='behind'">Next</button>
+    <div role="dialog" aria-modal="true" style="display:contents"><div style="position:fixed;inset:0;background:#0008">Sure?</div></div>`);
+  r = await run(`click "Next"`);
+  assert.equal(r.failure?.code, "covered");
+  assert.equal(await page.title(), "");
 });

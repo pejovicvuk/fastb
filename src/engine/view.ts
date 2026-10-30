@@ -22,6 +22,22 @@ export function forgetView(page: Page): void {
   seen.delete(page);
 }
 
+// The line the agent last saw for a ref on this page. Undefined when the agent saw
+// more than one element with the same role and name: then a re-rendered element
+// cannot be told from the others (two rows, each with a "Delete").
+export function seenLine(page: Page, ref: string): string | undefined {
+  const lines = seen.get(page) ?? [];
+  const head = `@${ref} `;
+  const line = lines.find((l) => l.trimStart().startsWith(head));
+  const what = line && /^@\w+ ([a-z]+ "(?:[^"\\]|\\.)*")/.exec(line.trimStart())?.[1];
+  if (!what) return undefined;
+  const same = lines.filter((l) => {
+    const rest = l.trimStart().replace(/^@\w+ /, "");
+    return rest === what || rest.startsWith(what + " ");
+  });
+  return same.length === 1 ? line : undefined;
+}
+
 // A big page is cut to a size budget (see budget.ts); `all` shows every line.
 // The base for later diffs is always the whole page.
 export async function showPage(page: Page, opts: { all?: boolean } = {}): Promise<string> {

@@ -28,6 +28,9 @@ export class Session {
   private starting?: Promise<void>;
   private lanesBrowser?: Promise<Browser>; // own-Chrome mode: one separate browser holds all lanes
   private lanes = new Map<string, Lane>();
+  // Called with the lane names whenever lanes close (also when new options restart the
+  // browser), so the engine drops each lane's task, permissions and logs.
+  onLanesClosed?: (names: string[]) => void;
 
   // Options stick: a command that does not name --cdp or --headless keeps the current browser.
   async page(given: EngineOptions): Promise<Page> {
@@ -88,6 +91,7 @@ export class Session {
 
   async closeLanes(): Promise<number> {
     const n = this.lanes.size;
+    if (n) this.onLanesClosed?.([...this.lanes.keys()]);
     await Promise.all([...this.lanes.values()].map((l) => l.context.close().catch(() => {})));
     this.lanes.clear();
     const launch = this.lanesBrowser;

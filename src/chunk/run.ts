@@ -60,6 +60,11 @@ export interface RunHooks {
   // The words of the control a click step is about to click (step index, label): the done
   // check's log names what was clicked, also when the step used a ref.
   onClickLabel?: (index: number, label: string) => void;
+  // An earlier run of this task had the line "allow": it lasts until the task changes.
+  // Asked at each risky click, so a task that ended during the run takes it away.
+  allowed?: () => boolean;
+  // The page line the agent last saw for a ref: finds the element again after a re-render.
+  refLine?: (page: Page, ref: string) => string | undefined;
 }
 
 // A box over the element for 0.6 s, in its own layer (id __fastb_flash, ignored by settle).
@@ -79,7 +84,7 @@ const flashBox = new Function("el", `return (${FLASH})(el);`) as (el: Element) =
 export async function runChunk(currentPage: () => Promise<Page>, steps: ParsedStep[], hooks: RunHooks = {}): Promise<RunResult> {
   const started = Date.now();
   const allowStep = steps.find((s) => s.step.op === "allow")?.step as { unchecked?: boolean } | undefined;
-  const policy: Policy = { allow: Boolean(allowStep), check: allowStep?.unchecked ? undefined : hooks.check, flash: hooks.flash };
+  const policy: Policy = { allow: Boolean(allowStep), allowed: hooks.allowed, check: allowStep?.unchecked ? undefined : hooks.check, flash: hooks.flash, refLine: hooks.refLine };
   for (let i = 0; i < steps.length; i++) {
     hooks.onStep?.(i, steps[i].source);
     policy.onLabel = hooks.onClickLabel ? (label) => hooks.onClickLabel!(i, label) : undefined;
@@ -109,7 +114,7 @@ export async function runChunk(currentPage: () => Promise<Page>, steps: ParsedSt
 
 async function find(page: Page, step: Extract<Step, { target?: unknown }>, purpose: Purpose, policy?: Policy): Promise<Locator> {
   if (!("target" in step) || !step.target) throw new StepError("no target", "no-target");
-  const r = await resolveTarget(page, step.target, purpose, FIND_MS);
+  const r = await resolveTarget(page, step.target, purpose, FIND_MS, policy?.refLine ? (ref) => policy.refLine!(page, ref) : undefined);
   if (!r.ok) throw new StepError(r.reason, r.choices ? "many-matches" : /^ref @/.test(r.reason) ? "ref-gone" : "not-found", r.choices);
   if (policy?.flash) await r.locator.evaluate(flashBox).catch(() => {});
   return r.locator;
@@ -121,10 +126,12 @@ const afterAction = (page: Page) => settle(page, { quietMs: 200, maxMs: 3000 });
 // What a gated click needs: an "allow" line, and then the commit check (unless "allow unchecked").
 interface Policy {
   allow: boolean;
+  allowed?: () => boolean;
   check?: RunHooks["check"];
   flash?: boolean;
   onSecret?: (value: string) => void;
   onLabel?: (label: string) => void;
+  refLine?: RunHooks["refLine"];
 }
 
 async function runStep(page: Page, step: Step, policy: Policy): Promise<void> {
@@ -141,6 +148,7 @@ async function runStep(page: Page, step: Step, policy: Policy): Promise<void> {
       await gate(page, loc, step.target, policy);
       await loc.click({ timeout: ACTION_MS }).catch(async (err: Error) => {
         if (!/intercepts pointer events/.test(err.message)) throw err;
+        if (await clickUnder(loc)) return;
         throw new StepError(`another element covers it${await coverText(loc)} (close it, or use press @ref Enter)`, "covered");
       });
       await afterAction(page);
@@ -161,9 +169,18 @@ async function runStep(page: Page, step: Step, policy: Policy): Promise<void> {
       const loc = await find(page, step, "input", policy);
       // Only real text fields can be filled; a <select> is chosen instead.
       const kind = await loc
-        .evaluate((el) => (el.tagName === "SELECT" ? "select" : el.matches("input, textarea") || (el as HTMLElement).isContentEditable ? "text" : el.tagName.toLowerCase()))
+        .evaluate((el) =>
+          el.tagName === "SELECT" ? "select"
+          : el.matches("input, textarea") ? ((el as HTMLInputElement).readOnly ? "readonly" : "text")
+          : (el as HTMLElement).isContentEditable ? "text" : el.tagName.toLowerCase(),
+        )
         .catch(() => "text");
       if (kind === "select") await select(page, loc, step.value);
+      else if (kind === "readonly") {
+        // A secret field's value is never printed.
+        const now = (await secretField(loc, true)) ? "" : await loc.inputValue({ timeout: 1000 }).catch(() => "");
+        throw new StepError(`it is read-only${now ? ` and holds "${now.slice(0, 60)}"` : ""}: click it to choose a value, or go on if the value is right`, "not-text-field");
+      }
       else if (kind !== "text") throw new StepError(`it is a ${kind}, not a text field: click it, or use type`, "not-text-field");
       else {
         await noteSecret(loc, step.value, policy);
@@ -255,7 +272,7 @@ async function gate(page: Page, loc: Locator, target: Target, policy: Policy): P
   const own = await loc.evaluate(controlLabel).catch(() => null);
   // Fail closed: a control we cannot read may be the one the gate exists for.
   if (!Array.isArray(own)) {
-    if (policy.allow) return; // allowed: as before, an unreadable label does not stop the click
+    if (policy.allow || policy.allowed?.()) return; // allowed: as before, an unreadable label does not stop the click
     throw new StepError("safety stop: could not read this control's label. Add the line allow to the chunk if the task needs it", "safety-stop");
   }
   const parts = [target.kind === "text" ? target.text : "", ...own].map((p) => String(p ?? "").replace(/\s+/g, " ").trim()).filter(Boolean);
@@ -263,7 +280,7 @@ async function gate(page: Page, loc: Locator, target: Target, policy: Policy): P
   policy.onLabel?.(label.slice(0, 60));
   const word = riskyWord(label);
   if (!word) return;
-  if (!policy.allow) throw new StepError(`safety stop: "${label.slice(0, 60)}" looks like a ${word} action. Add the line allow to the chunk if the task needs it`, "safety-stop");
+  if (!policy.allow && !policy.allowed?.()) throw new StepError(`safety stop: "${label.slice(0, 60)}" looks like a ${word} action. Add the line allow to the chunk if the task needs it`, "safety-stop");
   if (!policy.check) return;
   const stop = await policy.check(page, label.slice(0, 60));
   if (stop) {
@@ -281,15 +298,62 @@ const SECRET_FIELD = /card|cvv|cvc|cvn|security code|expir|iban|account|routing|
 
 async function noteSecret(loc: Locator, value: string, policy: Policy): Promise<void> {
   if (!policy.onSecret || !value) return;
+  if (await secretField(loc)) policy.onSecret(value);
+}
+
+// `failSecret`: a field that cannot be read counts as secret (before printing its value).
+async function secretField(loc: Locator, failSecret = false): Promise<boolean> {
   const secret = await loc
     .evaluate((node) => {
       const el = node as HTMLInputElement;
       if (el.type === "password") return "password";
       const labels = Array.from(el.labels ?? []).map((l) => l.textContent || "");
-      return [el.getAttribute("aria-label"), el.getAttribute("name"), el.id, el.getAttribute("placeholder"), el.getAttribute("autocomplete"), ...labels].filter(Boolean).join(" ");
+      const root = el.getRootNode() as Document | ShadowRoot;
+      const named = (el.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean).map((id) => {
+        const n = root.getElementById?.(id);
+        return `${n?.getAttribute("aria-label") ?? ""} ${n?.textContent ?? ""}`;
+      });
+      return [el.getAttribute("aria-label"), el.getAttribute("name"), el.id, el.getAttribute("placeholder"), el.getAttribute("autocomplete"), el.title, ...labels, ...named].filter(Boolean).join(" ");
     })
-    .catch(() => "");
-  if (secret === "password" || SECRET_FIELD.test(secret)) policy.onSecret(value);
+    .catch(() => (failSecret ? "password" : ""));
+  return secret === "password" || SECRET_FIELD.test(secret);
+}
+
+// A covered control gets the click event on itself (a banner or an open panel lies on
+// top). No key press: the focus could move to another control, past the safety gate.
+// Never while a dialog is open (the agent must answer it first; shadow roots included),
+// never on a disabled or inert element. False: the click did not go through.
+async function clickUnder(loc: Locator): Promise<boolean> {
+  const go = await loc
+    .evaluate((node) => {
+      // No named helpers in here: a transpiled one carries a helper the page does not have.
+      const el = node as HTMLElement;
+      if (el.matches(":disabled")) return false;
+      for (let up: Node | null = el; up; up = up.parentNode ?? (up as ShadowRoot).host ?? null) {
+        if (up instanceof Element && up.hasAttribute("inert")) return false; // also above a shadow host
+      }
+      const roots: (Document | ShadowRoot)[] = [el.ownerDocument];
+      for (let i = 0; i < roots.length; i++) {
+        for (const m of Array.from(roots[i].querySelectorAll('dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]'))) {
+          // Shown: it has a box, or its children do (a wrapper with display: contents).
+          const boxed = m.getClientRects().length > 0 || Array.from(m.querySelectorAll("*")).some((c) => c.getClientRects().length > 0);
+          if (!boxed || getComputedStyle(m).visibility === "hidden") continue;
+          let up: Node | null = el; // does the dialog hold the element (across shadow roots)?
+          while (up && up !== m) up = up.parentNode ?? (up as ShadowRoot).host ?? null;
+          if (!up) return false;
+        }
+        for (const e of Array.from(roots[i].querySelectorAll("*"))) if (e.shadowRoot) roots.push(e.shadowRoot);
+      }
+      return true;
+    })
+    .catch(() => false);
+  if (!go) return false;
+  try {
+    await loc.dispatchEvent("click", undefined, { timeout: ACTION_MS });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // What lies on top of the element's center, as text the agent can match to the page.
