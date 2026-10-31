@@ -51,7 +51,14 @@ export async function settle(page: Page, opts: SettleOptions = {}): Promise<numb
     const left = maxMs - (Date.now() - started);
     if (left <= 0) break;
     try {
-      await page.evaluate(`(${QUIET_WINDOW})(${JSON.stringify({ quietMs, maxMs: left })})`);
+      // A navigation that never commits (a server that does not answer) holds every
+      // page.evaluate: give up when the time is over.
+      const quiet = page.evaluate(`(${QUIET_WINDOW})(${JSON.stringify({ quietMs, maxMs: left })})`);
+      quiet.catch(() => {});
+      let timer: NodeJS.Timeout | undefined;
+      const late = new Promise<"late">((r) => (timer = setTimeout(() => r("late"), left + 500)));
+      const end = await Promise.race([quiet, late]).finally(() => clearTimeout(timer));
+      if (end === "late" && TRACE) appendFileSync(TRACE, `settle: page held by a pending navigation ${page.url()}\n`);
       break;
     } catch (err) {
       if (page.isClosed()) break;

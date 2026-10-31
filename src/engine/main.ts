@@ -14,7 +14,8 @@ import { withScheme } from "../browser/url.ts";
 import { parseChunk, ParseError } from "../chunk/parse.ts";
 import { runChunk, type RunHooks, type RunResult } from "../chunk/run.ts";
 import type { ParsedStep } from "../chunk/parse.ts";
-import { commitCheck, readEvidence, REMOTE_CHECK_FILE, remoteCheckEnabled, runCommitCheck } from "../check/commit.ts";
+import { checkWithRetry, commitCheck, finishEarlyCheck, readEvidence, REMOTE_CHECK_FILE, remoteCheckEnabled, runCommitCheck, type CheckOutcome } from "../check/commit.ts";
+import { dialogAnswer, type Arm } from "../browser/dialogs.ts";
 import { laneReport, type LaneOutcome } from "../check/report.ts";
 import { doneCheck, doneOutcome, keepActions, lanesDoneText, logLine, type DoneOutcome } from "../check/done.ts";
 import { startWatch, type WatchLane } from "../watch/server.ts";
@@ -69,8 +70,15 @@ const actions = new Map<string, string[]>();
 // Lanes whose last done check said DONE: their next "task" line starts a new log, even
 // with the same text (a second, equal task must not borrow the first one's Send click).
 const finished = new Set<string>();
-function recordActions(key: string, steps: ParsedStep[], done: number, track: { labels: Map<number, string>; secretSteps: Set<number> }): void {
-  const lines = steps.slice(0, done).map((s, i) => logLine(s.step, track.labels.get(i), track.secretSteps.has(i)));
+// Skipped steps (an optional step that found nothing, an "if" that did not hold) did not run.
+function recordActions(key: string, steps: ParsedStep[], result: RunResult, track: { labels: Map<number, string>; secretSteps: Set<number> }): void {
+  const skipped = new Set((result.skipped ?? []).map((s) => s.index));
+  const lines = steps.slice(0, result.done).map((s, i) => (skipped.has(i) ? null : logLine(s.step, track.labels.get(i), track.secretSteps.has(i))));
+  // A step that failed after its action went out (a Send, then a stalled page) may have
+  // run: it stays in the log, marked, so the done check never asks for it a second time.
+  const f = result.failure;
+  const last = f?.mayHaveRun ? logLine(steps[f.index].step, track.labels.get(f.index), track.secretSteps.has(f.index)) : null;
+  if (last) lines.push(`${last}  (failed after it started: it may have run)`);
   actions.set(key, keepActions(actions.get(key) ?? [], lines));
   if (sinceTask.has(key)) sinceTask.set(key, sinceTask.get(key)! + lines.filter(Boolean).length);
 }
@@ -97,6 +105,18 @@ session.onLanesClosed = (names) => {
 let checks = { n: 0, ms: 0, stopped: 0 };
 let notes = new Set<string>();
 
+// What a native dialog on a page may be answered with now (see dialogAnswer): a tagged
+// confirm while an allowed risky click is dispatched there, a leave-page warning during a goto.
+const armed = new WeakMap<Page, Arm>();
+// Native dialogs are answered at once (an open one blocks the page) and named in the
+// output of this command, or of the next one when none runs. Local output only.
+session.onDialog = (page, lane, dialog) => {
+  const a = dialogAnswer(dialog.type(), dialog.message(), armed.get(page));
+  if (a.accept && dialog.type() === "confirm") armed.delete(page); // one click, one confirm
+  (a.accept ? dialog.accept() : dialog.dismiss()).catch(() => {});
+  notes.add(lane ? `[${lane}] ${a.note}` : a.note);
+};
+
 // Hooks for one chunk: the live grid status, and the commit check when the lane has a task.
 function hooksFor(name: string | undefined, steps: ParsedStep[]): { hooks: RunHooks; labels: Map<number, string>; secretSteps: Set<number>; end(ok: boolean): void } {
   const key = name ?? "";
@@ -111,15 +131,14 @@ function hooksFor(name: string | undefined, steps: ParsedStep[]): { hooks: RunHo
     tasks.set(key, taskStep.text);
   }
   if (tasks.has(key) && steps.some((s) => s.step.op === "allow")) allowed.add(key);
-  const check: RunHooks["check"] = async (page, label) => {
-    const task = tasks.get(key);
-    if (!task) return null;
-    if (!remoteCheckEnabled()) {
-      notes.add(`note: commit check is off (it sends page facts to the Meta API; a person turns it on by writing "on" to ${REMOTE_CHECK_FILE})`);
-      return null;
-    }
-    const known = [...(secretsByLane.get(key) ?? [])];
-    const out = await runCommitCheck(task, label, () => readEvidence(page), (t, a, e) => commitCheck(t, a, e, known));
+  // One check of the page as it is now; a page that moved during it gets a second one.
+  const checkNow = (task: string, page: Page, label: string) => {
+    // Secrets are read at each request: a value learned after the check started is hidden too.
+    const known = () => [...(secretsByLane.get(key) ?? [])];
+    return checkWithRetry(() => runCommitCheck(task, label, () => readEvidence(page), (t, a, e) => commitCheck(t, a, e, known())));
+  };
+  const offNote = () => notes.add(`note: commit check is off (it sends page facts to the Meta API; a person turns it on by writing "on" to ${REMOTE_CHECK_FILE})`);
+  const answer = (out: CheckOutcome): { reason: string; model: boolean } | null => {
     if (out.kind === "skipped") {
       console.error(`commit check failed, click goes on: ${out.error}`);
       notes.add(`note: commit check skipped, click done unchecked (${out.error})`);
@@ -127,6 +146,26 @@ function hooksFor(name: string | undefined, steps: ParsedStep[]): { hooks: RunHo
     }
     checks = { n: checks.n + 1, ms: checks.ms + (out.ms ?? 0), stopped: checks.stopped + (out.kind === "stop" ? 1 : 0) };
     return out.kind === "stop" ? { reason: out.reason, model: out.model } : null;
+  };
+  const check: RunHooks["check"] = async (page, label) => {
+    const task = tasks.get(key);
+    if (!task) return null;
+    if (!remoteCheckEnabled()) return (offNote(), null);
+    return answer(await checkNow(task, page, label));
+  };
+  // Started while the read-only steps before the click run. At click time its verdict
+  // counts only for the same task and a page that still reads the same; else a new check.
+  const startCheck: RunHooks["startCheck"] = (page, label) => {
+    const task = tasks.get(key);
+    const early = task && remoteCheckEnabled() ? checkNow(task, page, label) : undefined;
+    early?.catch(() => {}); // a run that stops before the click never asks for it
+    return async () => {
+      const now = tasks.get(key);
+      if (!now) return null;
+      if (!remoteCheckEnabled()) return (offNote(), null);
+      const again = () => checkNow(now, page, label);
+      return answer(early && now === task ? await finishEarlyCheck(early, () => readEvidence(page), again) : await again());
+    };
   };
   laneStatus.set(key, { state: "running" });
   running.add(key);
@@ -138,6 +177,8 @@ function hooksFor(name: string | undefined, steps: ParsedStep[]): { hooks: RunHo
     hooks: {
       onClickLabel: (i, label) => labels.set(i, label),
       check,
+      startCheck,
+      arm: (page, what) => (what ? armed.set(page, what) : armed.delete(page)),
       allowed: () => allowed.has(key) && tasks.has(key),
       refLine: seenLine,
       onSecret: (value, i) => {
@@ -170,7 +211,12 @@ async function handle(req: Request): Promise<Handled> {
       const url = req.args[0];
       if (!url) return fail("usage: fastb open <url>");
       const page = await target(req)();
-      await page.goto(withScheme(url), { waitUntil: "domcontentloaded", timeout: 30000 });
+      armed.set(page, { kind: "leave" });
+      try {
+        await page.goto(withScheme(url), { waitUntil: "domcontentloaded", timeout: 30000 });
+      } finally {
+        armed.delete(page);
+      }
       await settle(page);
       if (req.flags.quiet) {
         forgetView(page);
@@ -204,7 +250,7 @@ async function handle(req: Request): Promise<Handled> {
       const track = hooksFor(typeof req.flags.lane === "string" ? req.flags.lane : undefined, steps);
       const result = await runChunk(getPage, steps, track.hooks);
       track.end(result.ok);
-      recordActions(typeof req.flags.lane === "string" ? req.flags.lane : "", steps, result.done, track);
+      recordActions(typeof req.flags.lane === "string" ? req.flags.lane : "", steps, result, track);
       const report = await runReport(result, async () => {
         const page = await getPage();
         return req.flags["no-look"] ? { text: await pageHeader(page) } : showChanges(page);
@@ -278,7 +324,7 @@ async function handle(req: Request): Promise<Handled> {
           try {
             const result = await runChunk(getPage, b.steps, track.hooks);
             track.end(result.ok);
-            recordActions(b.name, b.steps, result.done, track);
+            recordActions(b.name, b.steps, result, track);
             const report = await runReport(result, async () => {
               const page = await getPage();
               return req.flags["no-look"] ? { text: await pageHeader(page) } : showChanges(page);

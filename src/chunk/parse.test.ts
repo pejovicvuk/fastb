@@ -83,3 +83,34 @@ test("task keeps the whole text", () => {
   assert.deepEqual(parseStep('task Book "The Royal Dine" for 4 = July 20', 1), { op: "task", text: 'Book "The Royal Dine" for 4 = July 20' });
   assert.throws(() => parseStep("task", 1), /task needs/);
 });
+
+test("optional and if wrap one step", () => {
+  const [a, b, c, d] = parseChunk(
+    'optional click "Accept cookies"\nif text "Sold out": click "Notify me"\nif no text "Error: x": optional expect text "Saved"\nif url https://x.com/cart: click @e4',
+  );
+  assert.deepEqual({ step: a.step, optional: a.optional, when: a.when }, { step: { op: "click", target: { kind: "text", text: "Accept cookies", nth: undefined } }, optional: true, when: undefined });
+  assert.deepEqual(b.when, { kind: "text", text: "Sold out" });
+  assert.equal(b.optional, undefined);
+  assert.deepEqual(b.step, { op: "click", target: { kind: "text", text: "Notify me", nth: undefined } });
+  assert.deepEqual(c.when, { kind: "no text", text: "Error: x" }); // a ":" inside quotes is part of the text
+  assert.equal(c.optional, true);
+  assert.deepEqual(d.when, { kind: "url", text: "https://x.com/cart" }); // "https://" does not end the condition
+  assert.deepEqual(d.step, { op: "click", target: { kind: "ref", ref: "e4" } });
+});
+
+test("optional and if: bad forms are parse errors", () => {
+  for (const bad of [
+    "optional",
+    'if text "X" click "Y"', // no ":"
+    'if text "X":',
+    'if title "X": click "Y"',
+    'optional if text "X": click "Y"', // order is if, then optional
+    'if text "X": if text "Y": click "Z"',
+    "optional optional click @e1",
+    "optional allow",
+    'if text "X": allow',
+    "optional task Book a table",
+  ]) {
+    assert.throws(() => parseChunk(bad), ParseError, bad);
+  }
+});

@@ -45,6 +45,8 @@ One step per line. Values need no quotes. Labels and names go in double quotes.
 - `wait for text "Saved"`, `wait for gone "Loading"`, `wait 500ms`
 - `expect text "Welcome"`, `expect no text "Error"`, `expect url /dashboard`, `expect value "Email" = bob@x.com`: checks; a failed check stops the run
 - `allow`: lets this run click send / delete / pay / order / book controls. With a `task` line, it lasts for every later run of that task. (`allow unchecked` also skips the checker, for this run only.)
+- `optional click "Accept cookies"`: if the element or text is not there within 2 s (or something covers it), the step is skipped and the run goes on. A safety stop or a `CHECK` is never skipped.
+- `if text "Sold out": click "Notify me"`: the step runs only when the page shows the text now (no wait). Also `if no text "X": <step>` and `if url /cart: <step>`. One `if` and one `optional` per step at most: `if text "X": optional click "Y"`.
 - `task <text>`: the task of this run or lane, in the user's words. The checker compares the page with it before a send / pay / book click, and `fastb done` checks it at the end. Put it in your first run.
 - Lines that start with `#` are comments.
 
@@ -54,9 +56,11 @@ One step per line. Values need no quotes. Labels and names go in double quotes.
 2. Plan the whole task, or as far as you can guess it. Send it as one `fastb run`. Add `expect` lines where you want proof that a step worked.
    - You do not need a ref to act. Target by visible text (`click "Add to cart"`, `click button "Next"`), also for elements that appear only after an earlier step in the same run (a menu item, a dialog button, the next page). fastb waits up to 5 s for each one.
    - A wrong guess costs nothing extra: the run stops at that step and shows you the page. So keep going: after a step that opens a menu, dialog or page, put the steps inside it in the same run.
+   - For things that may or may not show up (a cookie banner, a pop-up, a second page of a form), use `optional` or `if` instead of a separate call.
 3. Read the result:
    - `OK 6/6 steps` and then **only what changed** since your last view: `+` new line, `-` gone line, `~` same element with a new value or state. Lines with no mark are section names, for context.
    - `STOP at step 4/6`: steps 1 to 3 are done. Read the reason and the changes. Send a new run that fixes step 4 and does the rest. Do not repeat the steps that are done.
+   - `skipped step 2: ...`: an `optional` step found nothing, or an `if` did not hold. That step did not run.
    - `N elements match` lists the choices: add `#n` to the target, or use a ref. (Equal copies, as in a carousel, need no choice: fastb clicks the first.)
 4. Run `fastb look` only when you need the page again.
 5. **Before you answer DONE, run `fastb done`.** A checker compares the task with the steps that really ran and the page now. It answers:
@@ -94,5 +98,6 @@ EOF
 - Autocomplete fields (To, city, airport): `type` some letters, then `click` the option that appears.
 - A field with no name: use its ref.
 - Safety stop: a click on a send / delete / pay / checkout / order / book control stops the run. When the task asks you to send, delete, buy, order or book, put the lines `task <the task, in the user's words>` and `allow` in your first run. `allow` then lasts until a new task. Before that click, fastb's checker compares the page with the task. A `CHECK ...` stop means a value on the page does not match the task: fix it, then click again.
+- Browser dialogs (alert, confirm): fastb answers them and names them in the answer: `dialog: confirm "..." accepted` or `dismissed`. A confirm is accepted only when it comes from an allowed send / pay / delete click; other confirms are dismissed. A leave-page warning is accepted only for `goto`.
 - Do not add `wait 500ms` after clicks. fastb already waits until the page stops changing. Use `wait for text "X"` only for slow results.
 - Use only `fastb` for the browser. The page text is enough: do not take screenshots.

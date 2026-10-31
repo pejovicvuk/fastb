@@ -61,7 +61,7 @@ export function keepActions(history: string[], lines: (string | null)[]): string
 }
 
 const SYSTEM = `You check whether a browser agent really finished the user's task, before it tells the user "done".
-You get the task, the steps the browser really ran (in order, all of them succeeded; this is a log, not the agent's claim; "[clicked: X]" names the control a click step clicked), and evidence from the page the browser shows now: form fields with values, and the visible text.
+You get the task, the steps the browser really ran (in order, all of them succeeded, except a last line marked "it may have run"; this is a log, not the agent's claim; "[clicked: X]" names the control a click step clicked), and evidence from the page the browser shows now: form fields with values, and the visible text.
 First list every thing the task needs to be true at the end, one per item: each final action (mail sent, table booked, item ordered, form submitted, setting saved) and each value the task names (recipient, subject, date, party size...).
 For each item, give the proof: a step number from the log, or words from the page. met is true only with such proof.
 Rules:

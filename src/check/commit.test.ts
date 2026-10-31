@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { changedFields, TEXT_MAX, commitPrompt, safeTask, formatEvidence, mismatchReason, redactEvidence, redactText, runCommitCheck, type Evidence } from "./commit.ts";
+import { changedFields, checkWithRetry, finishEarlyCheck, TEXT_MAX, commitPrompt, safeTask, formatEvidence, mismatchReason, redactEvidence, redactText, runCommitCheck, type Evidence } from "./commit.ts";
 
 test("evidence lists fields with kind, state and value", () => {
   const text = formatEvidence({
@@ -149,6 +149,57 @@ test("check flow: a change during the check stops; an API failure is skipped; a 
   assert.equal((await runCommitCheck("pay", "Pay", seq(ev("10.00")), async () => { throw new Error("Meta API 503"); })).kind, "skipped");
   assert.equal((await runCommitCheck("pay", "Pay", seq(ev("10.00"), ev("10.00")), okAsk)).kind, "ok");
   assert.equal((await runCommitCheck("pay", "Pay", async () => { throw new Error("closed"); }, okAsk)).kind, "stop");
+});
+
+test("retry: a page that moved during the check gets one more check, and only one", async () => {
+  const seq = (...xs: Evidence[]) => { let i = 0; return async () => xs[Math.min(i++, xs.length - 1)]; };
+  const okAsk = async () => ({ ok: true, mismatches: [], ms: 5 });
+  // moved, then stable: the second check passes; ms counts both
+  const read = seq(ev("10.00"), ev("10.50"), ev("10.50"), ev("10.50"));
+  const out = await checkWithRetry(() => runCommitCheck("pay", "Pay", read, okAsk));
+  assert.equal(out.kind, "ok");
+  assert.equal((out as { ms: number }).ms, 10);
+  // moves every time: stops after two checks
+  let n = 0;
+  const moving = async () => ev(String(n++));
+  let asks = 0;
+  const stop = await checkWithRetry(() => runCommitCheck("pay", "Pay", moving, async () => (asks++, { ok: true, mismatches: [], ms: 5 })));
+  assert.equal(stop.kind, "stop");
+  assert.match((stop as { reason: string }).reason, /changed during the check/);
+  assert.equal(asks, 2);
+  // a mismatch is never checked again
+  asks = 0;
+  const no = await checkWithRetry(() => runCommitCheck("pay", "Pay", seq(ev("1")), async () => (asks++, { ok: false, mismatches: [{ fact: "a", expected: "1", found: "2" }], ms: 5 })));
+  assert.equal(no.kind, "stop");
+  assert.equal(asks, 1);
+});
+
+test("early check: its verdict counts only while the page reads the same", async () => {
+  const okEarly = Promise.resolve({ kind: "ok" as const, ms: 5, seen: ev("10.00") });
+  let again = 0;
+  const fresh = async () => (again++, { kind: "stop" as const, reason: "fresh", model: true });
+  // same page at click time: the early OK is used, no new check
+  const same = await finishEarlyCheck(okEarly, async () => ev("10.00"), fresh);
+  assert.equal(same.kind, "ok");
+  assert.equal(same.reused, true);
+  assert.equal(again, 0);
+  // the amount changed after the early check: a new check decides
+  const moved = await finishEarlyCheck(okEarly, async () => ev("100.00"), fresh);
+  assert.equal(moved.kind, "stop");
+  assert.equal(again, 1);
+  // the click-time read fails: a new check decides (it reads the page itself)
+  await finishEarlyCheck(okEarly, async () => { throw new Error("closed"); }, fresh);
+  assert.equal(again, 2);
+  // an early check that stopped for a page change, failed, or was skipped: a new check
+  for (const early of [
+    Promise.resolve({ kind: "stop" as const, reason: "changed", model: false, changed: true }),
+    Promise.reject(new Error("boom")),
+    Promise.resolve({ kind: "skipped" as const, error: "503" }),
+  ]) await finishEarlyCheck(early as Promise<never>, async () => ev("10.00"), fresh);
+  assert.equal(again, 5);
+  // an early mismatch on the same page stops without a new check
+  const mismatch = await finishEarlyCheck(Promise.resolve({ kind: "stop" as const, reason: "amount", model: true, seen: ev("10.00") }), async () => ev("10.00"), fresh);
+  assert.deepEqual([mismatch.kind, (mismatch as { reason: string }).reason, again], ["stop", "amount", 5]);
 });
 
 

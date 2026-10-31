@@ -17,3 +17,22 @@ test("a failed page read after a stop keeps the steps done", async () => {
   assert.deepEqual(r.text.split("\n").slice(0, 3), ['STOP at step 3/4: click "Pay"', "reason: it is disabled", "done: steps 1-2 in 1.2s"]);
   assert.match(r.text, /could not read it/);
 });
+
+test("skipped steps are named after the step result", async () => {
+  const skipped = [
+    { index: 0, source: 'optional click "Accept cookies"', reason: "not found within 5s" },
+    { index: 2, source: 'if text "Sold out": click "Notify me"', reason: "condition not met" },
+  ];
+  const r = await runReport({ ok: true, done: 3, total: 3, ms: 500, skipped }, async () => ({ text: "page: x" }));
+  assert.deepEqual(r.text.split("\n"), [
+    "OK 3/3 steps 0.5s",
+    'skipped step 1: optional click "Accept cookies" (not found within 5s)',
+    'skipped step 3: if text "Sold out": click "Notify me" (condition not met)',
+    "page: x",
+  ]);
+});
+
+test("a page read that never answers does not hold the step result", async () => {
+  const r = await runReport({ ok: true, done: 1, total: 1, ms: 100 }, () => new Promise(() => {}), 50);
+  assert.equal(r.text, "OK 1/1 steps 0.1s\npage: could not read it (no answer in 0s, the page may still be loading). Run fastb look.");
+});

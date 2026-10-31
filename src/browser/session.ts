@@ -1,9 +1,10 @@
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
+import { chromium, type Browser, type BrowserContext, type Dialog, type Page } from "playwright-core";
 import type { EngineOptions } from "../protocol.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PROFILE_DIR } from "../paths.ts";
+import { writeQuietPrefs } from "./prefs.ts";
 
 // How a new lane's browser context is set up.
 export interface LaneSetup {
@@ -31,6 +32,23 @@ export class Session {
   // Called with the lane names whenever lanes close (also when new options restart the
   // browser), so the engine drops each lane's task, permissions and logs.
   onLanesClosed?: (names: string[]) => void;
+  // Every native dialog on every page (main, lanes, new tabs): `lane` is "" for the main
+  // browser. The handler must accept or dismiss it. With none set, it is dismissed.
+  onDialog?: (page: Page, lane: string, dialog: Dialog) => void;
+  private watched = new WeakSet<Page>();
+
+  private watchDialogs(page: Page, lane: string): void {
+    if (this.watched.has(page)) return;
+    this.watched.add(page);
+    page.on("dialog", (d) => {
+      try {
+        if (this.onDialog) return this.onDialog(page, lane, d);
+      } catch (err) {
+        console.error("dialog handler failed:", err);
+      }
+      d.dismiss().catch(() => {});
+    });
+  }
 
   // Options stick: a command that does not name --cdp or --headless keeps the current browser.
   async page(given: EngineOptions): Promise<Page> {
@@ -39,6 +57,7 @@ export class Session {
       const pages = this.context!.pages();
       this.current = pages[pages.length - 1] ?? (await this.context!.newPage());
     }
+    this.watchDialogs(this.current, "");
     return this.current;
   }
 
@@ -59,7 +78,10 @@ export class Session {
       const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, timezoneId: setup.timezone });
       if (setup.clock) await context.clock.install({ time: new Date(setup.clock) });
       const made: Lane = { context };
-      context.on("page", (p) => (made.current = p)); // a popup becomes the lane's page
+      context.on("page", (p) => {
+        this.watchDialogs(p, name);
+        made.current = p; // a popup becomes the lane's page
+      });
       context.on("close", () => this.lanes.delete(name));
       this.lanes.set(name, (lane = made));
     }
@@ -67,6 +89,7 @@ export class Session {
       const pages = lane.context.pages();
       lane.current = pages[pages.length - 1] ?? (await lane.context.newPage());
     }
+    this.watchDialogs(lane.current, name);
     return lane.current;
   }
 
@@ -143,6 +166,7 @@ export class Session {
     } else {
       // The saved profile keeps logins, but also old site data (drafts, carts).
       if (opts.fresh) this.tempProfile = mkdtempSync(join(tmpdir(), "fastb-profile-"));
+      writeQuietPrefs(this.tempProfile ?? PROFILE_DIR);
       this.context = await chromium.launchPersistentContext(this.tempProfile ?? PROFILE_DIR, {
         channel: "chrome",
         headless: opts.headless ?? false,
@@ -150,7 +174,11 @@ export class Session {
       });
     }
     // A new tab or popup becomes the page the agent works on.
-    this.context.on("page", (p) => (this.current = p));
+    for (const p of this.context.pages()) this.watchDialogs(p, "");
+    this.context.on("page", (p) => {
+      this.watchDialogs(p, "");
+      this.current = p;
+    });
     // The user may close Chrome by hand: forget it so the next command starts a new one.
     this.context.on("close", () => {
       console.error("browser closed");

@@ -67,9 +67,11 @@ export async function showChanges(page: Page): Promise<View> {
   return { text, full: fullText.length };
 }
 
+const VIEW_MS = 15000;
+
 // The answer to a run: the step result first, then the page. The steps already
 // ran, so a failed page read must not hide what was done.
-export async function runReport(result: RunResult, view: () => Promise<View>): Promise<View> {
+export async function runReport(result: RunResult, view: () => Promise<View>, viewMs = VIEW_MS): Promise<View> {
   const secs = (result.ms / 1000).toFixed(1);
   const lines: string[] = [];
   if (result.ok) lines.push(`OK ${result.done}/${result.total} steps ${secs}s`);
@@ -80,9 +82,19 @@ export async function runReport(result: RunResult, view: () => Promise<View>): P
     if (f.choices) lines.push("choices (add #n to the target):", ...f.choices.map((c) => "  " + c));
     lines.push(result.done ? `done: steps 1-${result.done} in ${secs}s` : `done: none (${secs}s)`);
   }
+  // Steps that did not run ("optional" found nothing, an "if" did not hold), one line each.
+  for (const s of result.skipped ?? []) {
+    const src = s.source.length > 80 ? s.source.slice(0, 79) + "…" : s.source;
+    lines.push(`skipped step ${s.index + 1}: ${src} (${s.reason})`);
+  }
   let page: View;
   try {
-    page = await view();
+    // A page whose navigation never commits holds every read: the result must still come back.
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<never>((_, no) => (timer = setTimeout(() => no(new Error(`no answer in ${Math.round(viewMs / 1000)}s, the page may still be loading`)), viewMs)));
+    const read = view();
+    read.catch(() => {});
+    page = await Promise.race([read, late]).finally(() => clearTimeout(timer));
   } catch (err) {
     page = { text: `page: could not read it (${(err instanceof Error ? err.message : String(err)).split("\n")[0]}). Run fastb look.` };
   }

@@ -2,7 +2,8 @@ import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { parseChunk } from "./parse.ts";
-import { runChunk } from "./run.ts";
+import { runChunk, type RunHooks } from "./run.ts";
+import { dialogAnswer, type Arm } from "../browser/dialogs.ts";
 import { changedFields, readEvidence } from "../check/commit.ts";
 import { seenLine, showPage } from "../engine/view.ts";
 
@@ -388,5 +389,310 @@ test("review 3: labelledby names, display-contents dialogs, labelled secrets", a
     <div role="dialog" aria-modal="true" style="display:contents"><div style="position:fixed;inset:0;background:#0008">Sure?</div></div>`);
   r = await run(`click "Next"`);
   assert.equal(r.failure?.code, "covered");
+  assert.equal(await page.title(), "");
+});
+
+test("optional steps that find nothing are skipped; if steps run only when their condition holds", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  await page.setContent(`<p>Sold out</p><button onclick="document.title += 'n'">Notify me</button><button onclick="document.title += 'b'">Buy</button>`);
+  await page.evaluate(() => (document.title = ""));
+  const steps = parseChunk(
+    'optional click "Accept cookies"\nif text "Sold out": click "Notify me"\nif no text "Sold out": click "Buy"\noptional expect text "Thanks"\nexpect text "Sold out"',
+  );
+  const t0 = Date.now();
+  const r = await runChunk(async () => page, steps);
+  assert.equal(r.ok, true);
+  assert.equal(await page.title(), "n");
+  assert.deepEqual(r.skipped?.map((s) => [s.index, s.reason]), [[0, "not found within 2s"], [2, "condition not met"], [3, 'text "Thanks" not on the page']]);
+  assert.ok(Date.now() - t0 < 6000, "optional steps wait at most 2 s");
+});
+
+test("optional never skips a safety stop, a choice between matches, or an unknown step error", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  await page.setContent(`<button onclick="document.title='sent'">Send</button><a>Open</a><a>Open</a>`);
+  await page.evaluate(() => (document.title = ""));
+  let r = await run('optional click "Send"\nexpect text "Open"');
+  assert.equal(r.failure?.code, "safety-stop");
+  assert.equal(r.skipped, undefined);
+  r = await run('optional click "Open"');
+  assert.equal(r.failure?.code, "many-matches");
+  // a false "if" never opens the gate: nothing is clicked, nothing stops
+  r = await run('if text "Missing": click "Send"');
+  assert.equal(r.ok, true);
+  assert.equal(await page.title(), "");
+});
+
+// The engine's hooks, cut down: the check spy and the confirm rule (see engine/main.ts).
+function checkSpy(verdict: { reason: string; model: boolean } | null = null) {
+  const calls = { check: [] as string[], start: [] as string[], finish: 0 };
+  const hooks: RunHooks = {
+    check: async (_p, label) => (calls.check.push(label), verdict),
+    startCheck: (_p, label) => {
+      calls.start.push(label);
+      return async () => (calls.finish++, verdict);
+    },
+  };
+  return { calls, hooks };
+}
+
+test("early commit check: starts during the read-only steps and is used for the same click", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  await page.setContent(`<label>Amount <input id="a"></label><button onclick="document.title='paid ' + a.value">Pay</button>`);
+  await page.evaluate(() => (document.title = ""));
+  const spy = checkSpy();
+  let r = await runChunk(async () => page, parseChunk('allow\nfill "Amount" = 5\nexpect value "Amount" = 5\nwait 50ms\nclick button "Pay"'), spy.hooks);
+  assert.equal(r.ok, true);
+  assert.equal(await page.title(), "paid 5");
+  assert.deepEqual(spy.calls, { check: [], start: ["Pay"], finish: 1 });
+
+  // a mismatch from the early check stops the click
+  await page.evaluate(() => (document.title = ""));
+  const no = checkSpy({ reason: "amount is 5, task wants 50", model: true });
+  r = await runChunk(async () => page, parseChunk('allow\nexpect value "Amount" = 5\nclick button "Pay"'), no.hooks);
+  assert.equal(r.failure?.code, "check-mismatch");
+  assert.equal(await page.title(), "");
+
+  // no read-only step before the click, no allow, or "allow unchecked": no early check
+  for (const chunk of ['allow\nfill "Amount" = 5\nclick button "Pay"', 'expect value "Amount" = 5\nclick button "Pay"', 'allow unchecked\nexpect value "Amount" = 5\nclick button "Pay"']) {
+    const s = checkSpy();
+    await runChunk(async () => page, parseChunk(chunk), s.hooks);
+    assert.deepEqual(s.calls.start, [], chunk);
+  }
+  // a click that is not risky: started for nothing is fine, but no early check is used
+  await page.setContent(`<input aria-label="Q"><button>Next</button>`);
+  const next = checkSpy();
+  r = await runChunk(async () => page, parseChunk('allow\nexpect value "Q" = \nclick "Next"'), next.hooks);
+  assert.equal(r.ok, true);
+  assert.deepEqual(next.calls, { check: [], start: [], finish: 0 });
+});
+
+test("early commit check: a different control at click time gets its own check", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  // The button's label changes after the early check started (a cart that was still loading).
+  await page.setContent(`<button id="b" onclick="document.title='clicked ' + b.textContent">Pay $5</button>
+    <script>setTimeout(() => { b.textContent = "Pay $50" }, 300)</script>`);
+  await page.evaluate(() => (document.title = ""));
+  const spy = checkSpy();
+  const r = await runChunk(async () => page, parseChunk('allow\nwait 600ms\nclick button "Pay"'), spy.hooks);
+  assert.equal(r.ok, true);
+  assert.deepEqual(spy.calls, { check: ["Pay | Pay $50"], start: ["Pay | Pay $5"], finish: 0 });
+  assert.equal(await page.title(), "clicked Pay $50");
+});
+
+// The engine's dialog rule, cut down (see engine/main.ts onDialog).
+function dialogRule(p: Page) {
+  const armed = new WeakMap<Page, Arm>();
+  const notes: string[] = [];
+  const onDialog = (d: import("playwright-core").Dialog) => {
+    const a = dialogAnswer(d.type(), d.message(), armed.get(p));
+    if (a.accept && d.type() === "confirm") armed.delete(p);
+    notes.push(a.note.split(" (")[0]);
+    void (a.accept ? d.accept() : d.dismiss());
+  };
+  p.on("dialog", onDialog);
+  const hooks: RunHooks = { arm: (pg, what) => (what ? armed.set(pg, what) : armed.delete(pg)) };
+  return { armed, notes, hooks, off: () => p.off("dialog", onDialog) };
+}
+
+test("confirm dialogs: accepted only during an allowed risky click, dismissed otherwise", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  const d = dialogRule(page);
+  try {
+    await page.setContent(`
+      <button onclick="if (confirm('Delete this mail?')) document.title += 'D'">Delete</button>
+      <button onclick="if (confirm('Leave the form?')) document.title += 'L'">Back</button>
+      <button onclick="alert('Saved'); document.title += 'A'">Save</button>
+      <button onclick="document.title += 'S'; setTimeout(() => { if (confirm('Delete all drafts?')) document.title += 'X' }, 50)">Send</button>
+      <button onclick="if (confirm('Delete one?')) document.title += '1'; if (confirm('Delete two?')) document.title += '2'">Remove</button>`);
+    await page.evaluate(() => (document.title = ""));
+    let r = await runChunk(async () => page, parseChunk('allow\nclick "Delete"'), d.hooks);
+    assert.equal(r.ok, true);
+    r = await runChunk(async () => page, parseChunk('allow\nclick "Back"\nclick "Save"'), d.hooks);
+    assert.equal(r.ok, true);
+    // review 1: a confirm from a timer while the page settles is not the click's own
+    r = await runChunk(async () => page, parseChunk('allow\nclick "Send"\nwait 200ms'), d.hooks);
+    assert.equal(r.ok, true);
+    // one click, one confirm
+    r = await runChunk(async () => page, parseChunk('allow\nclick "Remove"'), d.hooks);
+    assert.equal(r.ok, true);
+    assert.equal(await page.title(), "DAS1");
+    assert.deepEqual(d.notes, [
+      `dialog: confirm "Delete this mail?" accepted`,
+      `dialog: confirm "Leave the form?" dismissed`,
+      `dialog: alert "Saved" closed`,
+      `dialog: confirm "Delete all drafts?" dismissed`,
+      `dialog: confirm "Delete one?" accepted`,
+      `dialog: confirm "Delete two?" dismissed`,
+    ]);
+    assert.equal(d.armed.has(page), false, "disarmed after the click");
+  } finally {
+    d.off();
+  }
+});
+
+test("review 1: an optional step that may have acted, or failed for another cause, is not skipped", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  // The click ran, then its navigation stalls: Playwright times out after the click.
+  const p = await browser.newPage();
+  try {
+    await p.route("http://stall.test/**", () => {}); // never answered
+    await p.setContent(`<button onclick="document.title='clicked'; location.href='http://stall.test/'">Go</button>`);
+    const r = await runChunk(async () => p, parseChunk('optional click "Go"'));
+    assert.equal(r.skipped, undefined, "a click that ran is never reported as skipped");
+    assert.equal(r.failure?.mayHaveRun, true);
+    assert.match(r.failure!.reason, /may have run/);
+  } finally {
+    await p.close();
+  }
+  // A closed page is an error, not missing text.
+  const r = await runChunk(async () => p, parseChunk('optional wait for text "Saved"\noptional expect text "Saved"'));
+  assert.equal(r.ok, false);
+  assert.equal(r.failure?.code, "error");
+});
+
+test("review 1: no early check across an expect value step (it may learn a secret first)", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  await page.setContent(`<label>Password <input type="password" value="violetfox"></label><button>Send</button>`);
+  const spy = checkSpy();
+  let r = await runChunk(async () => page, parseChunk('allow\nwait 50ms\nexpect value "Password" = violetfox\nclick "Send"'), spy.hooks);
+  assert.equal(r.ok, true);
+  assert.deepEqual(spy.calls, { check: ["Send"], start: [], finish: 0 });
+  // after the expect value, read-only steps may still overlap the check
+  const late = checkSpy();
+  r = await runChunk(async () => page, parseChunk('allow\nexpect value "Password" = violetfox\nwait 50ms\nclick "Send"'), late.hooks);
+  assert.deepEqual(late.calls, { check: [], start: ["Send"], finish: 1 });
+});
+
+test("review 2: a confirm while a gated click waits to be ready is not accepted", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  const d = dialogRule(page);
+  try {
+    await page.setContent(`<button id="s" disabled onclick="document.title += 'S'">Send</button>
+      <script>
+        setTimeout(() => { if (confirm('Delete all drafts?')) document.title += 'X' }, 100);
+        setTimeout(() => { s.disabled = false }, 400);
+      </script>`);
+    await page.evaluate(() => (document.title = ""));
+    const r = await runChunk(async () => page, parseChunk('allow\nclick "Send"'), d.hooks);
+    assert.equal(r.ok, true);
+    assert.equal(await page.title(), "S");
+    assert.deepEqual(d.notes, [`dialog: confirm "Delete all drafts?" dismissed`]);
+  } finally {
+    d.off();
+  }
+});
+
+test("review 2: an early verdict is reused only for the whole same label", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  const long = "Send payment of the monthly invoice amount to the account holder ";
+  await page.setContent(`<button id="b" aria-label="${long}Alice">Send</button>
+    <script>setTimeout(() => b.setAttribute("aria-label", "${long}Bob"), 200)</script>`);
+  const spy = checkSpy();
+  const r = await runChunk(async () => page, parseChunk('allow\nwait 500ms\nclick button "Send"'), spy.hooks);
+  assert.equal(r.ok, true);
+  assert.equal(spy.calls.start.length, 1);
+  assert.equal(spy.calls.finish, 0, "the early verdict was for Alice");
+  assert.equal(spy.calls.check.length, 1);
+});
+
+test("review 2: an optional custom select whose option is missing is not skipped (the dropdown opened)", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  await page.setContent(`<div role="combobox" aria-label="Size" onclick="document.title='open'">Pick</div>`);
+  await page.evaluate(() => (document.title = ""));
+  const r = await runChunk(async () => page, parseChunk('optional select "Size" = Huge'));
+  assert.equal(r.ok, false);
+  assert.equal(r.failure?.code, "option-missing");
+  assert.equal(r.failure?.mayHaveRun, true);
+  assert.equal(await page.title(), "open");
+});
+
+test("review 3: the confirm arm ends when the click goes out, not when its navigation loads", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  const p = await browser.newPage();
+  const d = dialogRule(p);
+  try {
+    await p.route("http://stall.test/**", () => {}); // never answered
+    await p.setContent(`<button onclick="location.href='http://stall.test/'">Send</button>
+      <script>setTimeout(() => { if (confirm('Delete all drafts?')) document.title = 'X' }, 500)</script>`);
+    const r = await runChunk(async () => p, parseChunk('allow\nclick "Send"\nwait 600ms'), d.hooks);
+    assert.equal(r.ok, true);
+    assert.deepEqual(d.notes, [`dialog: confirm "Delete all drafts?" dismissed`]);
+  } finally {
+    d.off();
+    await p.close();
+  }
+});
+
+test("review 3: the commit check reads the page after the control is ready, as the click meets it", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  await page.setContent(`<p>Total <span id="a">5</span></p><button id="b" disabled onclick="document.title='paid ' + a.textContent">Pay</button>
+    <script>setTimeout(() => { a.textContent = "50"; b.disabled = false }, 300)</script>`);
+  await page.evaluate(() => (document.title = ""));
+  const seen: string[] = [];
+  const r = await runChunk(async () => page, parseChunk('allow\nclick "Pay"'), {
+    check: async (pg) => (seen.push((await pg.textContent("#a")) ?? ""), null),
+  });
+  assert.equal(r.ok, true);
+  assert.deepEqual(seen, ["50"]);
+  assert.equal(await page.title(), "paid 50");
+});
+
+test("review 4: a confirm from a timer while the gated click waits again is dismissed (no tag)", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  const d = dialogRule(page);
+  try {
+    await page.setContent(`<button id="s" onclick="if (confirm('Send it?')) document.title += 'S'">Send</button>`);
+    await page.evaluate(() => (document.title = ""));
+    // The check takes a while; meanwhile the button turns disabled, a timer asks, then it turns on again.
+    const hooks: RunHooks = {
+      ...d.hooks,
+      check: async (p) => {
+        await p.evaluate(() => {
+          const s = document.getElementById("s") as HTMLButtonElement;
+          s.disabled = true;
+          setTimeout(() => { if (confirm("Delete all drafts?")) document.title += "X"; }, 100);
+          setTimeout(() => (s.disabled = false), 400);
+        });
+        return null;
+      },
+    };
+    const r = await runChunk(async () => page, parseChunk('allow\nclick "Send"'), hooks);
+    assert.equal(r.ok, true);
+    assert.equal(await page.title(), "S");
+    assert.deepEqual(d.notes, [`dialog: confirm "Delete all drafts?" dismissed`, `dialog: confirm "Send it?" accepted`]);
+  } finally {
+    d.off();
+  }
+});
+
+test("review 4: a control whose label changes while it gets ready is not clicked", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  await page.setContent(`<button id="b" disabled aria-label="Send Alice" onclick="document.title='clicked'">Send</button>
+    <script>setTimeout(() => { b.setAttribute("aria-label", "Send Bob"); b.disabled = false }, 300)</script>`);
+  await page.evaluate(() => (document.title = ""));
+  const spy = checkSpy();
+  const r = await runChunk(async () => page, parseChunk('allow\nclick "Send"'), spy.hooks);
+  assert.equal(r.failure?.code, "check-blocked");
+  assert.match(r.failure!.reason, /changed while it got ready/);
+  assert.equal(await page.title(), "");
+  assert.deepEqual(spy.calls.check, []);
+});
+
+test("review 5: a control that turns into another one during the check is not clicked", async (t) => {
+  if (!browser) return t.skip("Chrome not installed");
+  await page.setContent(`<button id="b" aria-label="Send Alice" onclick="document.title='clicked ' + b.getAttribute('aria-label')">Send</button>`);
+  await page.evaluate(() => (document.title = ""));
+  const r = await runChunk(async () => page, parseChunk('allow\nclick "Send"'), {
+    check: async (p) => {
+      // During the check: disabled, then a new label, then enabled again.
+      await p.evaluate(() => {
+        const b = document.getElementById("b") as HTMLButtonElement;
+        b.disabled = true;
+        setTimeout(() => { b.setAttribute("aria-label", "Send Bob"); b.disabled = false; }, 200);
+      });
+      return null;
+    },
+  });
+  assert.equal(r.failure?.code, "check-blocked");
   assert.equal(await page.title(), "");
 });

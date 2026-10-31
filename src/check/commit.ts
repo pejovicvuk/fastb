@@ -229,9 +229,11 @@ export async function commitCheck(task: string, action: string, evidence: Eviden
   return { ...r.value, ms: r.ms };
 }
 
+// `seen`: the page reading the verdict is about (an early check is used only while the
+// page still matches it). `changed`: the page moved during the check.
 export type CheckOutcome =
-  | { kind: "ok"; ms: number } // verdict OK and the page did not move: click
-  | { kind: "stop"; reason: string; model: boolean; ms?: number } // do not click; model: the Meta model found a mismatch
+  | { kind: "ok"; ms: number; seen?: Evidence } // verdict OK and the page did not move: click
+  | { kind: "stop"; reason: string; model: boolean; ms?: number; seen?: Evidence; changed?: boolean } // do not click; model: the Meta model found a mismatch
   | { kind: "skipped"; error: string }; // the Meta API failed: the click goes on, the agent is told
 
 // The whole check before one click. Page reads that fail stop the click (we cannot
@@ -257,7 +259,7 @@ export async function runCommitCheck(
     return { kind: "skipped", error: error(err) };
   }
   const mismatch = mismatchReason(v);
-  if (mismatch) return { kind: "stop", reason: mismatch, model: true, ms: v.ms };
+  if (mismatch) return { kind: "stop", reason: mismatch, model: true, ms: v.ms, seen: before };
   // The verdict holds only for the state it saw: read again, and stop if anything moved.
   let after: Evidence;
   try {
@@ -266,8 +268,35 @@ export async function runCommitCheck(
     return { kind: "stop", reason: `could not read the page again after the check (${error(err)}); run the step again`, model: false, ms: v.ms };
   }
   const moved = changedFields(before, after);
-  if (moved.length) return { kind: "stop", reason: `the page changed during the check (${moved.join(", ")}); run the step again`, model: false, ms: v.ms };
-  return { kind: "ok", ms: v.ms };
+  if (moved.length) return { kind: "stop", reason: `the page changed during the check (${moved.join(", ")}); run the step again`, model: false, ms: v.ms, changed: true };
+  return { kind: "ok", ms: v.ms, seen: after };
+}
+
+// A page that moved during the check gets one more check before the click is stopped
+// (a cart total or a list that was still loading). `ms`: the time of all checks.
+export async function checkWithRetry(run: () => Promise<CheckOutcome>, tries = 2): Promise<CheckOutcome> {
+  let ms = 0;
+  for (let t = 1; ; t++) {
+    const out = await run();
+    if (out.kind !== "skipped") ms += out.ms ?? 0;
+    if (out.kind === "skipped" || !(out.kind === "stop" && out.changed) || t >= tries) return out.kind === "skipped" ? out : { ...out, ms };
+  }
+}
+
+// An early check (started while the steps before the click ran) counts only for the
+// page it saw: its OK or its mismatch is used when a new reading at click time is the
+// same; else, or when it could not finish, `again` checks the page as it is now.
+export async function finishEarlyCheck(
+  early: Promise<CheckOutcome>,
+  read: () => Promise<Evidence>,
+  again: () => Promise<CheckOutcome>,
+): Promise<CheckOutcome & { reused?: boolean }> {
+  const first = await early.catch(() => undefined);
+  if (first && first.kind !== "skipped" && first.seen && (first.kind === "ok" || first.model)) {
+    const now = await read().catch(() => undefined);
+    if (now && !changedFields(first.seen, now).length) return { ...first, reused: true };
+  }
+  return again();
 }
 
 // What differs between two readings (the page may change during the check): each

@@ -41,6 +41,8 @@ test("each verdict becomes one line that tells the agent what to do", () => {
 
 test("the final click: only click lines with a page label, final words only, no form step after it", () => {
   assert.equal(finalClick(['click @e1  [clicked: Checkout | Checkout $26.07]']), null);
+  // a Send that failed after it started may have run: never the proof of a final click
+  assert.equal(finalClick(['click @e2  [clicked: Send]  (failed after it started: it may have run)']), null);
   assert.equal(finalClick(['click @e1  [clicked: Add to cart]', 'click @e2  [clicked: Place Order]', 'goto https://x.com/']), "place order");
   assert.equal(finalClick(['click @e1  [clicked: Delete]', 'click @e9  [clicked: Close]']), "delete");
   assert.equal(finalClick(['click @e1  [clicked: Book]']), null); // often opens the booking form

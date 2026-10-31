@@ -10,6 +10,8 @@
 //   allow            (lets this chunk click delete / pay / send controls)
 //   allow unchecked  (the same, and skips the Meta model's commit check)
 //   task Book a table for 4 on July 20 at 7 PM   (what the commit check compares the page with)
+//   optional click "Accept cookies"   (if it is not there, skip it and go on)
+//   if text "Sold out": click "Notify me"   (run the step only when the page shows the text now)
 // Blank lines and lines starting with # are ignored.
 
 export type Target =
@@ -29,10 +31,15 @@ export type Step =
   | { op: "allow"; unchecked?: boolean }
   | { op: "task"; text: string };
 
+// When an "if" step runs: the page shows the text now, does not show it, or the URL holds it.
+export type Condition = { kind: "text" | "no text" | "url"; text: string };
+
 export interface ParsedStep {
   line: number; // 1-based line in the chunk
   source: string;
   step: Step;
+  optional?: boolean; // a step whose element or text is not there is skipped, not a STOP
+  when?: Condition; // "if <condition>: <step>": the step runs only when the condition holds
 }
 
 export class ParseError extends Error {
@@ -175,12 +182,53 @@ export function parseStep(source: string, line: number): Step {
   }
 }
 
+// The first ":" outside quotes that ends the condition (a space or the line end after
+// it, so "https://" in a URL condition does not count): [condition, step] or null.
+function splitCondition(s: string): [string, string] | null {
+  let inQuote = false;
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === "\\" && inQuote) i++;
+    else if (s[i] === '"') inQuote = !inQuote;
+    else if (!inQuote && s[i] === ":" && (i + 1 === s.length || /\s/.test(s[i + 1]))) return [s.slice(0, i).trim(), s.slice(i + 1).trim()];
+  }
+  return null;
+}
+
+const IF_USAGE = 'if needs: if text "X": <step> | if no text "X": <step> | if url /path: <step>';
+
+// One line: an optional "if <condition>:", then an optional "optional", then the step.
+// Settings (allow, task) always apply to the whole run: they take neither.
+export function parseLine(source: string, line: number): Omit<ParsedStep, "line" | "source"> {
+  let rest = source.trim();
+  let when: Condition | undefined;
+  const cond = /^if\s+(.*)$/i.exec(rest);
+  if (cond || /^if$/i.test(rest)) {
+    const parts = cond && splitCondition(cond[1]);
+    if (!parts || !parts[1]) throw new ParseError(line, IF_USAGE);
+    const c = /^(no\s+text|text|url)\s+(.+)$/i.exec(parts[0]);
+    if (!c) throw new ParseError(line, IF_USAGE);
+    const kind = c[1].toLowerCase().replace(/\s+/, " ") as Condition["kind"];
+    when = { kind, text: valueOf(c[2].trim()) };
+    if (!when.text) throw new ParseError(line, IF_USAGE);
+    rest = parts[1];
+  }
+  const opt = /^optional(?:\s+(.*))?$/i.exec(rest);
+  if (opt && !opt[1]) throw new ParseError(line, "optional needs a step: optional click \"X\"");
+  if (opt) rest = opt[1].trim();
+  if (/^(if|optional)(\s|$)/i.test(rest)) throw new ParseError(line, 'use at most one "if ...:" and one "optional", in that order');
+  const step = parseStep(rest, line);
+  if ((when || opt) && (step.op === "allow" || step.op === "task")) {
+    throw new ParseError(line, `${step.op} is for the whole run: it takes no "if" or "optional"`);
+  }
+  return { step, ...(opt ? { optional: true } : {}), ...(when ? { when } : {}) };
+}
+
 export function parseChunk(text: string): ParsedStep[] {
   const steps: ParsedStep[] = [];
   text.split("\n").forEach((raw, i) => {
     const source = raw.trim();
     if (!source || source.startsWith("#")) return;
-    steps.push({ line: i + 1, source, step: parseStep(source, i + 1) });
+    steps.push({ line: i + 1, source, ...parseLine(source, i + 1) });
   });
   return steps;
 }
